@@ -443,6 +443,8 @@ EOF
 /dev/console /bin/zsh -l
 EOF
     mkdir -p $staging/System/Library/LaunchDaemons $staging/usr/libexec
+    mkdir -p $staging/Library/UpdateCache
+    chmod 700 $staging/Library/UpdateCache
 
     cat > $staging/usr/libexec/pd-set-hostname <<'EOF'
 #!/bin/sh
@@ -543,19 +545,18 @@ EOF
 ${lib.optionalString (rootFsType == "hfs") ''
     cat > $staging/usr/libexec/pd-root-remount <<'EOF'
 #!/bin/sh
-# The kernel mounts the root volume read-only and hfs.kext honors that
-# (ext4.kext force-clears MNT_RDONLY instead, which is why the ext4 image
-# never needed this). Classic Darwin does mount -uw / from /etc/rc.
-# IOMediaBSDClient may not have published /dev/disk0s2 yet when this runs,
-# so retry until the node shows up.
-if test -x /bin/mount; then
-    n=0
-    while test ! -c /dev/disk0s2 -a ! -b /dev/disk0s2 -a $n -lt 50; do
-        /bin/sleep 0.2
-        n=$((n+1))
-    done
-    /bin/mount -t hfs -o update,rw /dev/disk0s2 /
+
+# Remount the already-mounted root filesystem read-write.
+if ! /sbin/mount -uw /; then
+    echo "pd-root-remount: failed to remount root read-write" >&2
+    exit 1
 fi
+
+if test "$1" = "--update"; then
+    exec /sbin/pd-update-installer
+fi
+
+exit 0
 EOF
     cat > $staging/System/Library/LaunchDaemons/org.puredarwin.root-remount.plist <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>

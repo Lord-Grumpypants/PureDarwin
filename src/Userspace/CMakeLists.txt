@@ -7,6 +7,14 @@ option(PUREDARWIN_ENABLE_FBDOOM "Build fbDOOM (GPL, external source required) fo
 option(PUREDARWIN_ENABLE_TCC "Build TinyCC for the PureDarwin userspace" OFF)
 
 
+option(PUREDARWIN_PD_INIT_ONLY "Configure only pd-init" OFF)
+
+if(PUREDARWIN_PD_INIT_ONLY)
+    add_subdirectory(pd-init)
+    add_subdirectory(pd-update-installer)
+    return()
+endif()
+
 add_subdirectory(diskdev_cmds)
 add_subdirectory(doubleagentd)
 add_subdirectory(drmprobe)
@@ -41,3 +49,5 @@ add_subdirectory(wifiutil)
 add_subdirectory(wslinit)
 add_subdirectory(xf86-input-puredarwin)
 add_subdirectory(xf86-video-puredarwingop)
+add_subdirectory(pd-init)
+add_subdirectory(pd-update-installer)
