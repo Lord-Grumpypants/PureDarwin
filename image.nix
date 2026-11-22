@@ -586,9 +586,7 @@ EOF
     if [ -x "$staging/usr/libexec/pd-update-helper" ]; then
       chmod 4755 "$staging/usr/libexec/pd-update-helper"
     fi
-${lib.optionalString (rootFsType == "hfs") ''
-    chmod 755 $staging/usr/libexec/pd-root-remount
-''}
+
     cat > $staging/var/root/.profile <<'EOF'
 test -r /etc/profile && . /etc/profile
 EOF
