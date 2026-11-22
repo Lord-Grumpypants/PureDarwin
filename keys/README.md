@@ -3,7 +3,7 @@
 Generate the Ed25519 keypair with:
 
 ```sh
-./scripts/pd-update-keygen.sh
+sh scripts/pd-update-keygen.sh
 ```
 
 Keep `keys/pd-update-ed25519.pem` offline and out of Git. Commit only
@@ -13,7 +13,7 @@ Keep `keys/pd-update-ed25519.pem` offline and out of Git. Commit only
 Create a release archive with:
 
 ```sh
-./scripts/package-pd-update.sh /path/to/system-root 0.1.1 keys/pd-update-ed25519.pem
+sh scripts/package-pd-update.sh /path/to/system-root 0.1.1 keys/pd-update-ed25519.pem
 ```
 
 The archive contains only the supported top-level system roots: `System`,
@@ -27,7 +27,7 @@ the fork with the `gh-pages` branch and `/(root)` as its source. Publish each
 signed release with:
 
 ```sh
-./scripts/publish-pd-update.sh ./pd-update-release
+sh scripts/publish-pd-update.sh ./pd-update-release
 ```
 
 The Settings pane downloads from the matching Pages URL. The update installer
