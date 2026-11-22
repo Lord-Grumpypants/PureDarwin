@@ -35,7 +35,7 @@ with tarfile.open(output, "w", format=tarfile.PAX_FORMAT) as archive:
 PY
 xz -T0 -9e -c "$TMP/update.tar" > "$TMP/update.tar.xz"
 HASH=$(shasum -a 256 "$TMP/update.tar.xz" | awk '{print $1}')
-SIZE=$(stat -f '%z' "$TMP/update.tar.xz")
+SIZE=$(python3 -c 'import os,sys; print(os.path.getsize(sys.argv[1]))' "$TMP/update.tar.xz")
 {
   printf 'PDUPDATE1\n'
   printf 'version=%s\n' "$VERSION"
