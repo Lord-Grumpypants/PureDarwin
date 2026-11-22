@@ -93,7 +93,8 @@ stdenv.mkDerivation {
     install -Dm644 Info.plist "$app/Info.plist"
     for l in *.lproj; do install -Dm644 -t "$app/Resources/$l" $l/*.strings; done
     install -Dm644 AppIcon.png "$app/Resources/AppIcon.png"
-    install -Dm4755 pd-update-helper "$out/usr/libexec/pd-update-helper"
+    # Nix store outputs cannot carry setuid bits; image.nix applies root ownership and mode 4755 under fakeroot.
+    install -Dm755 pd-update-helper "$out/usr/libexec/pd-update-helper"
     install -Dm644 -t "$app/Resources" png/*.png
     install -Dm644 Resources/TRENTA-LICENSE "$app/Resources/TRENTA-LICENSE"
     runHook postInstall
