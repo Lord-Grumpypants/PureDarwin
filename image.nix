@@ -542,20 +542,23 @@ EOF
 </plist>
 EOF
 
-${lib.optionalString (rootFsType == "hfs") ''
-    cat > $staging/usr/libexec/pd-root-remount <<'EOF'
+cat > $staging/usr/libexec/pd-root-remount <<'EOF'
 #!/bin/sh
-
-# Remount the already-mounted root filesystem read-write.
-if ! /sbin/mount -uw /; then
-    echo "pd-root-remount: failed to remount root read-write" >&2
-    exit 1
-fi
-
 if test "$1" = "--update"; then
-    exec /sbin/pd-update-installer
+  case "${rootFsType}" in
+    hfs) /sbin/mount -uw / || exit 1 ;;
+    ext4) : ;;
+    apfs)
+      echo "pd-root-remount: updates are disabled on APFS for now" >&2
+      rm -f /Library/UpdateCache/pending
+      exec /sbin/launchd
+      ;;
+  esac
+  exec /sbin/pd-update-installer
 fi
-
+if test "${rootFsType}" = "hfs"; then
+  exec /sbin/mount -uw /
+fi
 exit 0
 EOF
     cat > $staging/System/Library/LaunchDaemons/org.puredarwin.root-remount.plist <<'EOF'
@@ -563,22 +566,14 @@ EOF
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>Label</key>
-	<string>org.puredarwin.root-remount</string>
-	<key>ProgramArguments</key>
-	<array>
-		<string>/usr/libexec/pd-root-remount</string>
-	</array>
-	<key>RunAtLoad</key>
-	<true/>
-	<key>StandardOutPath</key>
-	<string>/dev/console</string>
-	<key>StandardErrorPath</key>
-	<string>/dev/console</string>
+  <key>Label</key><string>org.puredarwin.root-remount</string>
+  <key>ProgramArguments</key><array><string>/usr/libexec/pd-root-remount</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/dev/console</string>
+  <key>StandardErrorPath</key><string>/dev/console</string>
 </dict>
 </plist>
-EOF
-''}
+EOF}
 
     chmod 755 \
       $staging/usr/libexec/pd-set-hostname \
