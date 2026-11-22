@@ -22,6 +22,7 @@ else
   git -C "$TMP/site" rm -rf . >/dev/null 2>&1 || true
 fi
 mkdir -p "$TMP/site/updates/x86_64"
+touch "$TMP/site/.nojekyll"
 cp "$RELEASE/manifest" "$RELEASE/manifest.sig" "$RELEASE/update.tar.xz" "$TMP/site/updates/x86_64/"
 cat > "$TMP/site/index.html" <<'HTML'
 <!doctype html>
@@ -29,7 +30,7 @@ cat > "$TMP/site/index.html" <<'HTML'
 <title>PureDarwin updates</title>
 <p>PureDarwin update feed.</p>
 HTML
-git -C "$TMP/site" add updates/x86_64/manifest updates/x86_64/manifest.sig updates/x86_64/update.tar.xz index.html
+git -C "$TMP/site" add .nojekyll updates/x86_64/manifest updates/x86_64/manifest.sig updates/x86_64/update.tar.xz index.html
 git -C "$TMP/site" -c user.name="PureDarwin Update Publisher" -c user.email="noreply@users.noreply.github.com" commit -m "Publish PureDarwin update"
 git -C "$TMP/site" push "$REMOTE" gh-pages
 echo "Published to https://lord-grumpypants.github.io/PureDarwin/updates/x86_64/"
