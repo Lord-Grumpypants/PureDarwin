@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <openssl/crypto.h>
@@ -39,10 +40,30 @@ static int run(const char *path, char *const argv[])
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 static int exists(const char *p) { struct stat st; return lstat(p, &st) == 0; }
-static int remove_tree(const char *p)
+static int remove_tree(const char *path)
 {
-    char *const av[] = { "/bin/rm", "-rf", (char *)p, NULL };
-    return run("/bin/rm", av);
+    struct stat st;
+    if (lstat(path, &st) != 0)
+        return errno == ENOENT ? 0 : -1;
+    if (!S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode))
+        return unlink(path);
+    DIR *dir = opendir(path);
+    if (!dir) return -1;
+    struct dirent *entry;
+    int result = 0;
+    while ((entry = readdir(dir)) != NULL) {
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+            continue;
+        char child[PATH_MAX];
+        if (snprintf(child, sizeof(child), "%s/%s", path, entry->d_name) >= (int)sizeof(child) ||
+            remove_tree(child) != 0) {
+            result = -1;
+            break;
+        }
+    }
+    if (closedir(dir) != 0) result = -1;
+    if (result == 0 && rmdir(path) != 0) result = -1;
+    return result;
 }
 static int sync_dir(const char *p)
 {
