@@ -16,7 +16,23 @@ for d in System usr bin sbin etc Applications; do
   [ ! -e "$ROOT/$d" ] || set -- "$@" "$d"
 done
 [ "$#" -gt 0 ] || { echo "No supported system roots found" >&2; exit 1; }
-tar -C "$ROOT" -cf "$TMP/update.tar" "$@"
+python3 - "$ROOT" "$TMP/update.tar" "$@" <<'PY'
+import os
+import sys
+import tarfile
+
+root, output, *names = sys.argv[1:]
+def root_owner(member):
+    member.uid = 0
+    member.gid = 0
+    member.uname = "root"
+    member.gname = "wheel"
+    return member
+
+with tarfile.open(output, "w", format=tarfile.PAX_FORMAT) as archive:
+    for name in names:
+        archive.add(os.path.join(root, name), arcname=name, recursive=True, filter=root_owner)
+PY
 xz -T0 -9e -c "$TMP/update.tar" > "$TMP/update.tar.xz"
 HASH=$(shasum -a 256 "$TMP/update.tar.xz" | awk '{print $1}')
 SIZE=$(stat -f '%z' "$TMP/update.tar.xz")
