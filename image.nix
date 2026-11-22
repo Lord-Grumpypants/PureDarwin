@@ -447,7 +447,7 @@ EOF
     chmod 700 $staging/Library/UpdateCache
     ${lib.optionalString (builtins.pathExists ./keys/pd-update-ed25519.pub) ''}
     mkdir -p "$staging/System/Library/PrivateFrameworks/PDUpdate.framework/Resources"
-    install -m 0644 ./keys/pd-update-ed25519.pub "$staging/System/Library/PrivateFrameworks/PDUpdate.framework/Resources/update-ed25519.pub"
+    install -m 0644 ${./keys/pd-update-ed25519.pub} "$staging/System/Library/PrivateFrameworks/PDUpdate.framework/Resources/update-ed25519.pub"
     ''}
 
     cat > $staging/usr/libexec/pd-set-hostname <<'EOF'
@@ -577,11 +577,12 @@ EOF
   <key>StandardErrorPath</key><string>/dev/console</string>
 </dict>
 </plist>
-EOF}
+EOF
 
     chmod 755 \
       $staging/usr/libexec/pd-set-hostname \
-      $staging/usr/libexec/pd-dbus-launch
+      $staging/usr/libexec/pd-dbus-launch \
+      $staging/usr/libexec/pd-root-remount
 ${lib.optionalString (rootFsType == "hfs") ''
     chmod 755 $staging/usr/libexec/pd-root-remount
 ''}
