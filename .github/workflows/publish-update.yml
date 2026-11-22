@@ -66,7 +66,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          image="$(find result -maxdepth 1 -type f -name '*.img.zst' -print -quit)"
+          image="$(find -L result -maxdepth 1 -type f -name '*.img.zst' -print -quit)"
           test -n "$image"
           zstd -d "$image" -o "$RUNNER_TEMP/puredarwin.img"
           loop="$(sudo losetup --find --show --partscan "$RUNNER_TEMP/puredarwin.img")"
