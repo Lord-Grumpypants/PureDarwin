@@ -33,5 +33,6 @@ target_compile_options(pd-update-installer PRIVATE
     -fno-stack-protector -fno-exceptions
     -fno-unwind-tables -fno-asynchronous-unwind-tables)
 target_link_libraries(pd-update-installer PRIVATE
-    "${PD_OPENSSL_CRYPTO_LIBRARY}" "${PD_XZ_LIBRARY}")
+    "${PD_OPENSSL_CRYPTO_LIBRARY}" "${PD_XZ_LIBRARY}"
+    libSystem_B_stub)
 install(TARGETS pd-update-installer DESTINATION sbin COMPONENT BaseSystem)
