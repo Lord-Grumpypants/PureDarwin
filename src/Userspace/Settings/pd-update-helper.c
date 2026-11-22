@@ -63,6 +63,7 @@ static int secure_cache(void)
 }
 int main(int argc,char **argv)
 {
+    umask(077);
     if(geteuid()!=0||argc!=2|| (strcmp(argv[1],"check")&&strcmp(argv[1],"install"))){
         fprintf(stderr,"pd-update-helper: privileged helper; usage: check|install\n");return 2;
     }
@@ -86,7 +87,9 @@ int main(int argc,char **argv)
     int fd=open(CACHE "/.pending.tmp",O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW,0600);
     if(fd<0)return 1;
     dprintf(fd,"%s\n",ver);
-    if(fsync(fd)||close(fd)||rename(CACHE "/.pending.tmp",CACHE "/pending"))return 1;
+    int failed = fsync(fd);
+    if(close(fd))failed = 1;
+    if(failed || rename(CACHE "/.pending.tmp",CACHE "/pending"))return 1;
     (void)chmod(CACHE,0700);
     printf("Update %s downloaded; it will be installed on the next reboot.\n",ver);
     return 0;
