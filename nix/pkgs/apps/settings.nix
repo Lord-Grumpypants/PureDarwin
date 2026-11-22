@@ -1,7 +1,7 @@
 { stdenv, lib, fetchurl, darwinCrossToolchain, nativeLd, appleSdk, libSystem
 , corefoundation, foundation, libobjc, appkit, onyx2d, coretext, quartzcore
 , coregraphics, applicationservices, coreservices, windowserver, openglFramework, mesa
-, librsvg, iokit, audiotoolbox, carbon
+, librsvg, iokit, audiotoolbox, carbon, openssl
 , accountsSrc ? ../../../src/Userspace/loginwindow
 
 , src ? ../../../src/Userspace/Settings
@@ -43,6 +43,10 @@ stdenv.mkDerivation {
         -c "$f" -o "objs/$(basename "$f" .m).o"
     done
     pcc_wait
+
+    $cc -isysroot "$SDK" -mmacosx-version-min=26.5 -fuse-ld=${nativeLd}/bin/ld -nostdlib \
+      -I${openssl}/include -L${openssl}/lib -L${libSystem}/usr/lib \
+      pd-update-helper.c -lcrypto -lSystem -o pd-update-helper
 
     $cc -isysroot "$SDK" -mmacosx-version-min=26.5 \
       -fuse-ld=${nativeLd}/bin/ld -nostdlib \
@@ -89,6 +93,7 @@ stdenv.mkDerivation {
     install -Dm644 Info.plist "$app/Info.plist"
     for l in *.lproj; do install -Dm644 -t "$app/Resources/$l" $l/*.strings; done
     install -Dm644 AppIcon.png "$app/Resources/AppIcon.png"
+    install -Dm4755 pd-update-helper "$out/usr/libexec/pd-update-helper"
     install -Dm644 -t "$app/Resources" png/*.png
     install -Dm644 Resources/TRENTA-LICENSE "$app/Resources/TRENTA-LICENSE"
     runHook postInstall
