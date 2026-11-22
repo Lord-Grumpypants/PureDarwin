@@ -445,7 +445,7 @@ EOF
     mkdir -p $staging/System/Library/LaunchDaemons $staging/usr/libexec
     mkdir -p $staging/Library/UpdateCache
     chmod 700 $staging/Library/UpdateCache
-    ${lib.optionalString (builtins.pathExists ./keys/pd-update-ed25519.pub) ''}
+    ${lib.optionalString (builtins.pathExists ./keys/pd-update-ed25519.pub) ''
     mkdir -p "$staging/System/Library/PrivateFrameworks/PDUpdate.framework/Resources"
     install -m 0644 ${./keys/pd-update-ed25519.pub} "$staging/System/Library/PrivateFrameworks/PDUpdate.framework/Resources/update-ed25519.pub"
     ''}
