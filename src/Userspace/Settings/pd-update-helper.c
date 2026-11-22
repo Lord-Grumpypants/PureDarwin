@@ -53,6 +53,22 @@ static int version(const char *path,char *out,size_t cap)
     }
     fclose(fp);return found?0:-1;
 }
+static int sync_path(const char *path)
+{
+    int fd=open(path,O_RDONLY|O_NOFOLLOW);
+    if(fd<0)return -1;
+    int rc=fsync(fd);
+    if(close(fd))rc=-1;
+    return rc;
+}
+static int sync_cache(void)
+{
+    int fd=open(CACHE,O_RDONLY);
+    if(fd<0)return -1;
+    int rc=fsync(fd);
+    if(close(fd))rc=-1;
+    return rc;
+}
 static int secure_cache(void)
 {
     struct stat st;
@@ -81,7 +97,7 @@ int main(int argc,char **argv)
     const char *at=CACHE "/.update.download";
     unlink(at);
     if(fetch("update.tar.xz",at)){unlink(mt);unlink(st);unlink(at);fprintf(stderr,"pd-update-helper: update download failed\n");return 1;}
-    if(rename(mt,CACHE "/manifest")||rename(st,CACHE "/manifest.sig")||rename(at,CACHE "/update.tar.xz")){
+    if(sync_path(mt)||sync_path(st)||sync_path(at)||rename(mt,CACHE "/manifest")||rename(st,CACHE "/manifest.sig")||rename(at,CACHE "/update.tar.xz")||sync_cache()){
         unlink(mt);unlink(st);unlink(at);fprintf(stderr,"pd-update-helper: cannot stage downloaded update\n");return 1;
     }
     int fd=open(CACHE "/.pending.tmp",O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW,0600);
@@ -89,7 +105,7 @@ int main(int argc,char **argv)
     dprintf(fd,"%s\n",ver);
     int failed = fsync(fd);
     if(close(fd))failed = 1;
-    if(failed || rename(CACHE "/.pending.tmp",CACHE "/pending"))return 1;
+    if(failed || rename(CACHE "/.pending.tmp",CACHE "/pending") || sync_cache())return 1;
     (void)chmod(CACHE,0700);
     printf("Update %s downloaded; it will be installed on the next reboot.\n",ver);
     return 0;
