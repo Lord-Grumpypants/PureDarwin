@@ -209,6 +209,7 @@ static int apply_update(void)
 }
 static void boot_launchd(void)
 {
+    (void)unlink(CACHE "/pending");
     char *const av[]={"/sbin/launchd",NULL};execv(av[0],av);
     message("pd-update-installer: cannot start launchd after rollback\n");for(;;)pause();
 }
