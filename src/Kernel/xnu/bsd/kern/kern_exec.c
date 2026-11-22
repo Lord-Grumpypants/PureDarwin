@@ -8033,13 +8033,7 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path)
 }
 
 static const char * init_programs[] = {
-#if DEBUG
-	"/usr/appleinternal/sbin/launchd.debug",
-#endif
-#if DEVELOPMENT || DEBUG
-	"/usr/appleinternal/sbin/launchd.development",
-#endif
-	"/sbin/launchd",
+	"/sbin/pd-init",
 };
 
 /*
@@ -8071,69 +8065,35 @@ static const char * init_programs[] = {
  * 3		2		NA		/usr/appleinternal/sbin/launchd.development
  * 4		3		1		/sbin/launchd
  */
+
 void
 load_init_program(proc_t p)
 {
-	uint32_t i;
-	int error;
-	vm_map_t map = current_map();
-	mach_vm_offset_t scratch_addr = 0;
-	mach_vm_size_t map_page_size = vm_map_page_size(map);
+        int error;
+        vm_map_t map = current_map();
+        mach_vm_offset_t scratch_addr = 0;
+        mach_vm_size_t map_page_size = vm_map_page_size(map);
 
 #if DEVELOPMENT || DEBUG
-	/* Use the opportunity to initialize exec's debug log stream */
-	exec_log_handle = os_log_create("com.apple.xnu.bsd", "exec");
+        /* Use the opportunity to initialize exec's debug log stream */
+        exec_log_handle = os_log_create("com.apple.xnu.bsd", "exec");
 #endif /* DEVELOPMENT || DEBUG */
 
-	(void) mach_vm_allocate_kernel(map, &scratch_addr, map_page_size,
-	    VM_MAP_KERNEL_FLAGS_ANYWHERE());
+        (void) mach_vm_allocate_kernel(map, &scratch_addr, map_page_size,
+            VM_MAP_KERNEL_FLAGS_ANYWHERE());
 #if CONFIG_MEMORYSTATUS
-	(void) memorystatus_init_at_boot_snapshot();
+        (void) memorystatus_init_at_boot_snapshot();
 #endif /* CONFIG_MEMORYSTATUS */
 
-#if DEBUG || DEVELOPMENT
-	/* Check for boot-arg suffix first */
-	char launchd_suffix[64];
-	if (PE_parse_boot_argn("launchdsuffix", launchd_suffix, sizeof(launchd_suffix))) {
-		char launchd_path[128];
-		boolean_t is_release_suffix = ((launchd_suffix[0] == 0) ||
-		    (strcmp(launchd_suffix, "release") == 0));
+        printf("load_init_program: attempting to load %s\\n", init_programs[0]);
+        error = load_init_program_at_path(
+            p, (user_addr_t)scratch_addr, init_programs[0]);
 
-		if (is_release_suffix) {
-			printf("load_init_program: attempting to load /sbin/launchd\n");
-			error = load_init_program_at_path(p, (user_addr_t)scratch_addr, "/sbin/launchd");
-			if (!error) {
-				return;
-			}
+        if (!error) {
+                return;
+        }
 
-			panic("Process 1 exec of launchd.release failed, errno %d", error);
-		} else {
-			strlcpy(launchd_path, "/usr/appleinternal/sbin/launchd.", sizeof(launchd_path));
-			strlcat(launchd_path, launchd_suffix, sizeof(launchd_path));
-
-			printf("load_init_program: attempting to load %s\n", launchd_path);
-			error = load_init_program_at_path(p, (user_addr_t)scratch_addr, launchd_path);
-			if (!error) {
-				return;
-			} else if (error != ENOENT) {
-				printf("load_init_program: failed loading %s: errno %d\n", launchd_path, error);
-			}
-		}
-	}
-#endif
-
-	error = ENOENT;
-	for (i = 0; i < sizeof(init_programs) / sizeof(init_programs[0]); i++) {
-		printf("load_init_program: attempting to load %s\n", init_programs[i]);
-		error = load_init_program_at_path(p, (user_addr_t)scratch_addr, init_programs[i]);
-		if (!error) {
-			return;
-		} else if (error != ENOENT) {
-			printf("load_init_program: failed loading %s: errno %d\n", init_programs[i], error);
-		}
-	}
-
-	panic("Process 1 exec of %s failed, errno %d", ((i == 0) ? "<null>" : init_programs[i - 1]), error);
+        panic("Process 1 exec of %s failed, errno %d", init_programs[0], error);
 }
 
 /*

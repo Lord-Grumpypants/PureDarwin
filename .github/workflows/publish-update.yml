@@ -1,0 +1,114 @@
+name: Publish signed update
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: PureDarwin update version (for example 26.5.1)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-pd-update
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    name: Build, sign, and publish x86_64 update
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      UPDATE_VERSION: ${{ github.event.release.tag_name || inputs.version }}
+      PD_UPDATE_SIGNING_KEY_B64: ${{ secrets.PD_UPDATE_ED25519_PRIVATE_KEY_B64 }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Validate signing key secret
+        shell: bash
+        run: |
+          if [[ -z "$PD_UPDATE_SIGNING_KEY_B64" ]]; then
+            echo "::error::Set the PD_UPDATE_ED25519_PRIVATE_KEY_B64 repository secret to the base64-encoded Ed25519 PEM private key."
+            exit 1
+          fi
+          if [[ -z "$UPDATE_VERSION" ]]; then
+            echo "::error::No update version was supplied."
+            exit 1
+          fi
+
+      - name: Install system tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y e2fsprogs xz-utils zstd
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+            extra-substituters = https://hydra.lab004.dev
+            extra-trusted-public-keys = hydra.lab004.dev-1:gPXVaEarmWgIFDuqmpf+9gXetBCC9jxzkZg+CZ8cC+M=
+
+      - name: Build PureDarwin x86_64 image
+        run: nix build -L .#hydraJobs.release.full
+
+      - name: Mount the image root filesystem
+        id: rootfs
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$(find result -maxdepth 1 -type f -name '*.img.zst' -print -quit)"
+          test -n "$image"
+          zstd -d "$image" -o "$RUNNER_TEMP/puredarwin.img"
+          loop="$(sudo losetup --find --show --partscan "$RUNNER_TEMP/puredarwin.img")"
+          echo "loop=$loop" >> "$GITHUB_OUTPUT"
+          sudo udevadm settle
+          sudo mkdir -p "$RUNNER_TEMP/system-root"
+          sudo mount -o ro "${loop}p2" "$RUNNER_TEMP/system-root"
+          echo "path=$RUNNER_TEMP/system-root" >> "$GITHUB_OUTPUT"
+
+      - name: Package and sign update
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/pd-update-ed25519.pem"
+          trap 'rm -f "$key"' EXIT
+          printf '%s' "$PD_UPDATE_SIGNING_KEY_B64" | base64 --decode > "$key"
+          chmod 600 "$key"
+          openssl pkey -in "$key" -pubout -out "$RUNNER_TEMP/update-signing-key.pub"
+          openssl pkey -pubin -in keys/pd-update-ed25519.pub -outform DER > "$RUNNER_TEMP/image-public.der"
+          openssl pkey -pubin -in "$RUNNER_TEMP/update-signing-key.pub" -outform DER > "$RUNNER_TEMP/secret-public.der"
+          cmp "$RUNNER_TEMP/image-public.der" "$RUNNER_TEMP/secret-public.der"
+          PD_UPDATE_OUT="$RUNNER_TEMP/update-release" \
+            sh scripts/package-pd-update.sh "${{ steps.rootfs.outputs.path }}" "$UPDATE_VERSION" "$key"
+          mkdir -p site/updates/x86_64
+          cp "$RUNNER_TEMP/update-release/"{manifest,manifest.sig,update.tar.xz} site/updates/x86_64/
+          printf '<!doctype html>\n<meta charset="utf-8">\n<title>PureDarwin updates</title>\n<p>PureDarwin update feed.</p>\n' > site/index.html
+          touch site/.nojekyll
+
+      - name: Unmount image
+        if: always()
+        run: |
+          if [[ -n "${{ steps.rootfs.outputs.loop }}" ]]; then
+            sudo umount "$RUNNER_TEMP/system-root" || true
+            sudo losetup -d "${{ steps.rootfs.outputs.loop }}" || true
+          fi
+
+      - name: Publish GitHub Pages feed
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./site
+          force_orphan: false
+          keep_files: false
+          commit_message: "Publish PureDarwin update ${{ env.UPDATE_VERSION }}"

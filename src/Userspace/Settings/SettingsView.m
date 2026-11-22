@@ -13,6 +13,12 @@
 #import "SoundPane.h"
 #include "pdaccounts_client.h"
 #include <pwd.h>
+#include <errno.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+extern char **environ;
 #include <Carbon/Carbon.h>
 
 // sizes from the demo's settings window
@@ -292,6 +298,7 @@ static NSArray *sections(void)
                            @[ @"power", NSLocalizedString(@"Power", @""), NSLocalizedString(@"Battery and sleep", @""), @"pref-power" ],
                            @[ @"input", NSLocalizedString(@"Mouse & Keyboard", @""), NSLocalizedString(@"Pointer and keys", @""), @"pref-mouse" ] ] ],
         @[ NSLocalizedString(@"Region", @""), @[ @[ @"clock", NSLocalizedString(@"Date & Time", @""), NSLocalizedString(@"Clock and time zone", @""), @"pref-locale" ],
+                         @[ @"updates", NSLocalizedString(@"Software Update", @""), NSLocalizedString(@"PureDarwin updates", @""), @"pref-software" ],
                          @[ @"about", NSLocalizedString(@"About", @""), NSLocalizedString(@"Darwin and xnu", @""), @"settings" ] ] ],
     ];
 }
@@ -2005,6 +2012,46 @@ static NSString *shortName(NSString *real)
     ] at:y];
 }
 
+- (CGFloat)drawUpdatesAt:(CGFloat)y
+{
+    return [self card:@[
+        [self valueRow:NSLocalizedString(@"Installed version", @"") value:[NSString stringWithFormat:@"%@ %@", PDProductName(), PDSystemVersion()]],
+        [self buttonRow:NSLocalizedString(@"Check for Updates…", @"") note:NSLocalizedString(@"Look for a signed PureDarwin release", @"") action:^{
+            pid_t pid; int status = -1;
+            char *const av[] = { "/usr/libexec/pd-update-helper", "check", NULL };
+            int err = posix_spawn(&pid, av[0], NULL, NULL, av, environ);
+            if (!err) { while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {} }
+            NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+            [alert setMessageText:(!err && WIFEXITED(status) && WEXITSTATUS(status) == 0) ?
+                NSLocalizedString(@"An update is available", @"") :
+                NSLocalizedString(@"No update could be verified", @"")];
+            [alert setInformativeText:(!err && WIFEXITED(status) && WEXITSTATUS(status) == 0) ?
+                NSLocalizedString(@"The signed release was found. Choose Download and Install to stage it.", @"") :
+                NSLocalizedString(@"Check your network connection or the configured update feed.", @"")];
+            [alert runModal];
+        }],
+        [self buttonRow:NSLocalizedString(@"Download and Install", @"") note:NSLocalizedString(@"The update is applied during the next boot", @"") primary:YES action:^{
+            NSAlert *confirm = [[[NSAlert alloc] init] autorelease];
+            [confirm setMessageText:NSLocalizedString(@"Download this update?", @"")];
+            [confirm setInformativeText:NSLocalizedString(@"PureDarwin will verify the signed update and apply it before the next normal startup.", @"")];
+            [confirm addButtonWithTitle:NSLocalizedString(@"Download", @"")];
+            [confirm addButtonWithTitle:NSLocalizedString(@"Cancel", @"")];
+            if ([confirm runModal] != NSAlertFirstButtonReturn) return;
+            pid_t pid; int status = -1;
+            char *const av[] = { "/usr/libexec/pd-update-helper", "install", NULL };
+            int err = posix_spawn(&pid, av[0], NULL, NULL, av, environ);
+            if (!err) { while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {} }
+            NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+            BOOL ok = !err && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+            [alert setMessageText:ok ? NSLocalizedString(@"Update downloaded", @"") : NSLocalizedString(@"Update download failed", @"")];
+            [alert setInformativeText:ok ?
+                NSLocalizedString(@"Restart PureDarwin to apply the update. It will be installed before launchd starts.", @"") :
+                NSLocalizedString(@"The update could not be downloaded or authenticated. Your installed system was not changed.", @"")];
+            [alert runModal];
+        }]
+    ] at:y];
+}
+
 - (CGFloat)drawAboutAt:(CGFloat)y
 {
     return [self card:@[
@@ -2047,6 +2094,8 @@ static NSString *shortName(NSString *real)
         return [self drawInputAt:y];
     if ([_pane isEqualToString:@"clock"])
         return [self drawClockAt:y];
+    if ([_pane isEqualToString:@"updates"])
+        return [self drawUpdatesAt:y];
     return [self drawAboutAt:y];
 }
 

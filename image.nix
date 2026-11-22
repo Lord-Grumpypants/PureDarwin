@@ -443,6 +443,12 @@ EOF
 /dev/console /bin/zsh -l
 EOF
     mkdir -p $staging/System/Library/LaunchDaemons $staging/usr/libexec
+    mkdir -p $staging/Library/UpdateCache
+    chmod 700 $staging/Library/UpdateCache
+    ${lib.optionalString (builtins.pathExists ./keys/pd-update-ed25519.pub) ''}
+    mkdir -p "$staging/System/Library/PrivateFrameworks/PDUpdate.framework/Resources"
+    install -m 0644 ${./keys/pd-update-ed25519.pub} "$staging/System/Library/PrivateFrameworks/PDUpdate.framework/Resources/update-ed25519.pub"
+    ''}
 
     cat > $staging/usr/libexec/pd-set-hostname <<'EOF'
 #!/bin/sh
@@ -540,51 +546,47 @@ EOF
 </plist>
 EOF
 
-${lib.optionalString (rootFsType == "hfs") ''
-    cat > $staging/usr/libexec/pd-root-remount <<'EOF'
+cat > $staging/usr/libexec/pd-root-remount <<'EOF'
 #!/bin/sh
-# The kernel mounts the root volume read-only and hfs.kext honors that
-# (ext4.kext force-clears MNT_RDONLY instead, which is why the ext4 image
-# never needed this). Classic Darwin does mount -uw / from /etc/rc.
-# IOMediaBSDClient may not have published /dev/disk0s2 yet when this runs,
-# so retry until the node shows up.
-if test -x /bin/mount; then
-    n=0
-    while test ! -c /dev/disk0s2 -a ! -b /dev/disk0s2 -a $n -lt 50; do
-        /bin/sleep 0.2
-        n=$((n+1))
-    done
-    /bin/mount -t hfs -o update,rw /dev/disk0s2 /
+if test "$1" = "--update"; then
+  case "${rootFsType}" in
+    hfs) /sbin/mount -uw / || exit 1 ;;
+    ext4) : ;;
+    apfs)
+      echo "pd-root-remount: updates are disabled on APFS for now" >&2
+      rm -f /Library/UpdateCache/pending
+      exec /sbin/launchd
+      ;;
+  esac
+  exec /sbin/pd-update-installer
 fi
+if test "${rootFsType}" = "hfs"; then
+  exec /sbin/mount -uw /
+fi
+exit 0
 EOF
     cat > $staging/System/Library/LaunchDaemons/org.puredarwin.root-remount.plist <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>Label</key>
-	<string>org.puredarwin.root-remount</string>
-	<key>ProgramArguments</key>
-	<array>
-		<string>/usr/libexec/pd-root-remount</string>
-	</array>
-	<key>RunAtLoad</key>
-	<true/>
-	<key>StandardOutPath</key>
-	<string>/dev/console</string>
-	<key>StandardErrorPath</key>
-	<string>/dev/console</string>
+  <key>Label</key><string>org.puredarwin.root-remount</string>
+  <key>ProgramArguments</key><array><string>/usr/libexec/pd-root-remount</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/dev/console</string>
+  <key>StandardErrorPath</key><string>/dev/console</string>
 </dict>
 </plist>
 EOF
-''}
 
     chmod 755 \
       $staging/usr/libexec/pd-set-hostname \
-      $staging/usr/libexec/pd-dbus-launch
-${lib.optionalString (rootFsType == "hfs") ''
-    chmod 755 $staging/usr/libexec/pd-root-remount
-''}
+      $staging/usr/libexec/pd-dbus-launch \
+      $staging/usr/libexec/pd-root-remount
+    if [ -x "$staging/usr/libexec/pd-update-helper" ]; then
+      chmod 4755 "$staging/usr/libexec/pd-update-helper"
+    fi
+
     cat > $staging/var/root/.profile <<'EOF'
 test -r /etc/profile && . /etc/profile
 EOF
@@ -1004,6 +1006,7 @@ ${lib.optionalString (ramdiskPrune != []) ''
     fakeroot bash <<FAKESCRIPT
     chown -R 0:0 "$staging"
     chmod 4755 "$staging/usr/bin/sudo"
+    if [ -x "$staging/usr/libexec/pd-update-helper" ]; then chmod 4755 "$staging/usr/libexec/pd-update-helper"; fi
     mke2fs -q -F -t ext4 \
       -b 4096 \
       -O ^orphan_file \
@@ -1086,6 +1089,7 @@ ${lib.optionalString (rootFsType == "hfs") ''
     printf 'PDHFSRT1' | dd of=root.img bs=1 seek=$((root_size * 512 - 1024 + 104)) conv=notrunc status=none
 
     chmod 4755 "$staging/usr/bin/sudo"
+    if [ -x "$staging/usr/libexec/pd-update-helper" ]; then chmod 4755 "$staging/usr/libexec/pd-update-helper"; fi
     tar --format=ustar --owner=0 --group=0 --hard-dereference \
       -cf staging.tar -C "$staging" .
     if ! hfsplus root.img untar staging.tar > untar.log 2>&1; then
@@ -1110,6 +1114,7 @@ ${lib.optionalString (rootFsType == "apfs") ''
     fakeroot bash <<FAKESCRIPT
     chown -R 0:0 "$staging"
     chmod 4755 "$staging/usr/bin/sudo"
+    if [ -x "$staging/usr/libexec/pd-update-helper" ]; then chmod 4755 "$staging/usr/libexec/pd-update-helper"; fi
     apfsrw populate root.img "$staging"
 FAKESCRIPT
     # the boot volume has to be the System role, mkapfs leaves it None and nothing matches boot-uuid
@@ -1124,6 +1129,7 @@ ${lib.optionalString (rootFsType == "ext4") ''
     fakeroot bash <<FAKESCRIPT
     chown -R 0:0 "$staging"
     chmod 4755 "$staging/usr/bin/sudo"
+    if [ -x "$staging/usr/libexec/pd-update-helper" ]; then chmod 4755 "$staging/usr/libexec/pd-update-helper"; fi
 ${lib.optionalString (defaultUser != null) ''
     chown -R ${toString (defaultUser.uid or 501)}:20 "$staging/Users/${defaultUser.name}"
 ''}    mke2fs -q -F -t ext4 \
