@@ -1,9 +1,9 @@
-add_darwin_executable(pd-update-installer MACOSX_VERSION_MIN 26.5)
-
 if(NOT PD_OPENSSL_PREFIX OR NOT PD_XZ_PREFIX)
-    message(FATAL_ERROR
-        "pd-update-installer requires PD_OPENSSL_PREFIX and PD_XZ_PREFIX")
+    message(STATUS "Skipping pd-update-installer: OpenSSL/XZ prefixes are not configured")
+    return()
 endif()
+
+add_darwin_executable(pd-update-installer MACOSX_VERSION_MIN 26.5)
 
 find_path(PD_OPENSSL_INCLUDE_DIR openssl/evp.h
     PATHS "${PD_OPENSSL_PREFIX}/include"
