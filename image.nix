@@ -583,9 +583,6 @@ EOF
       $staging/usr/libexec/pd-set-hostname \
       $staging/usr/libexec/pd-dbus-launch \
       $staging/usr/libexec/pd-root-remount
-    if [ -x "$staging/usr/libexec/pd-update-helper" ]; then
-      chmod 4755 "$staging/usr/libexec/pd-update-helper"
-    fi
 
     cat > $staging/var/root/.profile <<'EOF'
 test -r /etc/profile && . /etc/profile
