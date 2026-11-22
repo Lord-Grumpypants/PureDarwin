@@ -1006,6 +1006,7 @@ ${lib.optionalString (ramdiskPrune != []) ''
     fakeroot bash <<FAKESCRIPT
     chown -R 0:0 "$staging"
     chmod 4755 "$staging/usr/bin/sudo"
+    if [ -x "$staging/usr/libexec/pd-update-helper" ]; then chmod 4755 "$staging/usr/libexec/pd-update-helper"; fi
     mke2fs -q -F -t ext4 \
       -b 4096 \
       -O ^orphan_file \
@@ -1088,6 +1089,7 @@ ${lib.optionalString (rootFsType == "hfs") ''
     printf 'PDHFSRT1' | dd of=root.img bs=1 seek=$((root_size * 512 - 1024 + 104)) conv=notrunc status=none
 
     chmod 4755 "$staging/usr/bin/sudo"
+    if [ -x "$staging/usr/libexec/pd-update-helper" ]; then chmod 4755 "$staging/usr/libexec/pd-update-helper"; fi
     tar --format=ustar --owner=0 --group=0 --hard-dereference \
       -cf staging.tar -C "$staging" .
     if ! hfsplus root.img untar staging.tar > untar.log 2>&1; then
@@ -1112,6 +1114,7 @@ ${lib.optionalString (rootFsType == "apfs") ''
     fakeroot bash <<FAKESCRIPT
     chown -R 0:0 "$staging"
     chmod 4755 "$staging/usr/bin/sudo"
+    if [ -x "$staging/usr/libexec/pd-update-helper" ]; then chmod 4755 "$staging/usr/libexec/pd-update-helper"; fi
     apfsrw populate root.img "$staging"
 FAKESCRIPT
     # the boot volume has to be the System role, mkapfs leaves it None and nothing matches boot-uuid
@@ -1126,6 +1129,7 @@ ${lib.optionalString (rootFsType == "ext4") ''
     fakeroot bash <<FAKESCRIPT
     chown -R 0:0 "$staging"
     chmod 4755 "$staging/usr/bin/sudo"
+    if [ -x "$staging/usr/libexec/pd-update-helper" ]; then chmod 4755 "$staging/usr/libexec/pd-update-helper"; fi
 ${lib.optionalString (defaultUser != null) ''
     chown -R ${toString (defaultUser.uid or 501)}:20 "$staging/Users/${defaultUser.name}"
 ''}    mke2fs -q -F -t ext4 \
