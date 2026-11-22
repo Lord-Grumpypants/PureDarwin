@@ -10,36 +10,53 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <lzma.h>
 
-#define CACHE       "/Library/UpdateCache"
-#define MANIFEST    CACHE "/manifest"
-#define SIGNATURE   CACHE "/manifest.sig"
-#define ARCHIVE     CACHE "/update.tar.xz"
-#define STAGING     CACHE "/staging"
-#define JOURNAL     CACHE "/transaction"
+#define CACHE "/Library/UpdateCache"
+#define MANIFEST CACHE "/manifest"
+#define SIGNATURE CACHE "/manifest.sig"
+#define ARCHIVE CACHE "/update.tar.xz"
+#define STAGING CACHE "/staging"
+#define BACKUP CACHE "/rollback"
+#define JOURNAL CACHE "/transaction"
 #define TRUSTED_KEY "/System/Library/PrivateFrameworks/PDUpdate.framework/Resources/update-ed25519.pub"
 #define MAX_MANIFEST 4096
 #define MAX_ARCHIVE (8ULL * 1024ULL * 1024ULL * 1024ULL)
-#define MAX_PATH 1024
+#define MAX_OPS 16
 
-static void fail(const char *what)
+static const char *roots[] = { "System", "usr", "bin", "sbin", "etc", "Applications" };
+
+static void message(const char *s) { (void)write(2, s, strlen(s)); }
+static int run(const char *path, char *const argv[])
 {
-    fprintf(stderr, "pd-update-installer: %s: %s\n", what, strerror(errno));
-    _exit(1);
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (!pid) { execv(path, argv); _exit(127); }
+    int status;
+    while (waitpid(pid, &status, 0) < 0) if (errno != EINTR) return -1;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
-
-static int read_file(const char *path, unsigned char **out, size_t *length,
-                     size_t maximum)
+static int exists(const char *p) { struct stat st; return lstat(p, &st) == 0; }
+static int remove_tree(const char *p)
+{
+    char *const av[] = { "/bin/rm", "-rf", (char *)p, NULL };
+    return run("/bin/rm", av);
+}
+static int sync_dir(const char *p)
+{
+    int fd = open(p, O_RDONLY);
+    if (fd < 0) return -1;
+    int r = fsync(fd); close(fd); return r;
+}
+static int read_file(const char *path, unsigned char **out, size_t *length, size_t maximum)
 {
     int fd = open(path, O_RDONLY | O_NOFOLLOW);
     if (fd < 0) return -1;
     struct stat st;
     if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_size < 0 ||
-        (uint64_t)st.st_size > maximum) {
-        close(fd); errno = EINVAL; return -1;
-    }
+        (uint64_t)st.st_size > maximum) { close(fd); errno = EINVAL; return -1; }
     size_t n = (size_t)st.st_size;
     unsigned char *p = malloc(n + 1);
     if (!p) { close(fd); return -1; }
@@ -50,193 +67,161 @@ static int read_file(const char *path, unsigned char **out, size_t *length,
         if (r <= 0) { free(p); close(fd); errno = EIO; return -1; }
         done += (size_t)r;
     }
-    close(fd);
-    p[n] = 0;
-    *out = p; *length = n;
-    return 0;
+    close(fd); p[n] = 0; *out = p; *length = n; return 0;
 }
-
-static int parse_manifest(const unsigned char *p, size_t n,
-                          char version[128], unsigned char digest[32],
-                          uint64_t *archive_size)
+static int parse_manifest(const unsigned char *p, size_t n, unsigned char digest[32], uint64_t *size)
 {
     if (!n || n >= MAX_MANIFEST || memchr(p, 0, n)) return -1;
-    char *copy = strndup((const char *)p, n);
+    char *copy = strndup((const char *)p, n), *save = NULL;
     if (!copy) return -1;
-    char *save = NULL;
     char *line = strtok_r(copy, "\n", &save);
     if (!line || strcmp(line, "PDUPDATE1")) { free(copy); return -1; }
-    int have_version = 0, have_hash = 0, have_size = 0;
+    int hash = 0, bytes = 0, version = 0;
     while ((line = strtok_r(NULL, "\n", &save))) {
-        if (!strncmp(line, "version=", 8) && !have_version) {
-            size_t l = strlen(line + 8);
-            if (!l || l >= 128) { free(copy); return -1; }
-            memcpy(version, line + 8, l + 1); have_version = 1;
-        } else if (!strncmp(line, "sha256=", 7) && !have_hash) {
-            const char *h = line + 7;
-            if (strlen(h) != 64) { free(copy); return -1; }
-            for (int i = 0; i < 32; ++i) {
-                unsigned int v;
-                if (sscanf(h + i * 2, "%2x", &v) != 1) {
-                    free(copy); return -1;
-                }
-                digest[i] = (unsigned char)v;
-            }
-            have_hash = 1;
-        } else if (!strncmp(line, "size=", 5) && !have_size) {
-            char *end = NULL;
-            unsigned long long v = strtoull(line + 5, &end, 10);
-            if (!end || *end || !v || v > MAX_ARCHIVE) {
-                free(copy); return -1;
-            }
-            *archive_size = (uint64_t)v; have_size = 1;
-        } else {
-            free(copy); return -1;
-        }
+        if (!strncmp(line, "version=", 8) && !version && line[8]) version = 1;
+        else if (!strncmp(line, "sha256=", 7) && !hash && strlen(line + 7) == 64) {
+            for (int i=0;i<32;i++) { unsigned v; if (sscanf(line+7+i*2,"%2x",&v)!=1) { free(copy); return -1; } digest[i]=(unsigned char)v; }
+            hash=1;
+        } else if (!strncmp(line, "size=", 5) && !bytes) {
+            char *end=NULL; unsigned long long v=strtoull(line+5,&end,10);
+            if (!end || *end || !v || v>MAX_ARCHIVE) { free(copy); return -1; }
+            *size=(uint64_t)v; bytes=1;
+        } else { free(copy); return -1; }
     }
-    free(copy);
-    return have_version && have_hash && have_size ? 0 : -1;
+    free(copy); return hash && bytes && version ? 0 : -1;
 }
-
-static int verify_signature(const unsigned char *manifest, size_t manifest_len,
-                            const unsigned char *signature, size_t signature_len)
+static int verify_signature(const unsigned char *m,size_t ml,const unsigned char *s,size_t sl)
 {
-    if (signature_len != 64) return 0;
-    FILE *key_file = fopen(TRUSTED_KEY, "rb");
-    if (!key_file) return 0;
-    EVP_PKEY *key = PEM_read_PUBKEY(key_file, NULL, NULL, NULL);
-    fclose(key_file);
-    if (!key || EVP_PKEY_id(key) != EVP_PKEY_ED25519) {
-        EVP_PKEY_free(key); return 0;
-    }
-    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-    int ok = ctx && EVP_DigestVerifyInit(ctx, NULL, NULL, NULL, key) == 1 &&
-             EVP_DigestVerify(ctx, signature, signature_len,
-                              manifest, manifest_len) == 1;
-    EVP_MD_CTX_free(ctx);
-    EVP_PKEY_free(key);
-    return ok;
+    if (sl!=64) return 0;
+    FILE *fp=fopen(TRUSTED_KEY,"rb"); if(!fp) return 0;
+    EVP_PKEY *key=PEM_read_PUBKEY(fp,NULL,NULL,NULL); fclose(fp);
+    if(!key || EVP_PKEY_id(key)!=EVP_PKEY_ED25519) { EVP_PKEY_free(key); return 0; }
+    EVP_MD_CTX *ctx=EVP_MD_CTX_new();
+    int ok=ctx && EVP_DigestVerifyInit(ctx,NULL,NULL,NULL,key)==1 && EVP_DigestVerify(ctx,s,sl,m,ml)==1;
+    EVP_MD_CTX_free(ctx); EVP_PKEY_free(key); return ok;
 }
-
-static int verify_archive(const unsigned char expected[32], uint64_t expected_size)
+static int verify_archive(const unsigned char expected[32],uint64_t size)
 {
-    int fd = open(ARCHIVE, O_RDONLY | O_NOFOLLOW);
-    if (fd < 0) return 0;
-    struct stat st;
-    if (fstat(fd, &st) || !S_ISREG(st.st_mode) ||
-        (uint64_t)st.st_size != expected_size) {
-        close(fd); return 0;
-    }
-    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-    if (!ctx || EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) != 1) {
-        EVP_MD_CTX_free(ctx); close(fd); return 0;
-    }
-    unsigned char buffer[65536], actual[EVP_MAX_MD_SIZE];
-    unsigned int actual_len = 0;
-    int ok = 1;
-    for (;;) {
-        ssize_t n = read(fd, buffer, sizeof(buffer));
-        if (n < 0 && errno == EINTR) continue;
-        if (n < 0) { ok = 0; break; }
-        if (!n) break;
-        if (EVP_DigestUpdate(ctx, buffer, (size_t)n) != 1) { ok = 0; break; }
-    }
-    if (ok && (EVP_DigestFinal_ex(ctx, actual, &actual_len) != 1 ||
-               actual_len != 32 || CRYPTO_memcmp(actual, expected, 32)))
-        ok = 0;
-    EVP_MD_CTX_free(ctx);
-    close(fd);
-    return ok;
+    int fd=open(ARCHIVE,O_RDONLY|O_NOFOLLOW); if(fd<0) return 0;
+    struct stat st; if(fstat(fd,&st)||!S_ISREG(st.st_mode)||(uint64_t)st.st_size!=size){close(fd);return 0;}
+    EVP_MD_CTX *ctx=EVP_MD_CTX_new(); if(!ctx||EVP_DigestInit_ex(ctx,EVP_sha256(),NULL)!=1){EVP_MD_CTX_free(ctx);close(fd);return 0;}
+    unsigned char b[65536],actual[EVP_MAX_MD_SIZE]; unsigned al=0; int ok=1;
+    for(;;){ssize_t n=read(fd,b,sizeof(b));if(n<0&&errno==EINTR)continue;if(n<0){ok=0;break;}if(!n)break;if(EVP_DigestUpdate(ctx,b,(size_t)n)!=1){ok=0;break;}}
+    if(ok&&(EVP_DigestFinal_ex(ctx,actual,&al)!=1||al!=32||CRYPTO_memcmp(actual,expected,32)))ok=0;
+    EVP_MD_CTX_free(ctx);close(fd);return ok;
 }
-
-/* Decode the complete XZ stream before any installed path is touched. */
-static int validate_xz(void)
+static int decompress_xz(void)
 {
-    int in = open(ARCHIVE, O_RDONLY | O_NOFOLLOW);
-    if (in < 0) return 0;
-    char temp[] = CACHE "/payload.XXXXXX";
-    int out = mkstemp(temp);
-    if (out < 0) { close(in); return 0; }
-    (void)fchmod(out, 0600);
-
-    lzma_stream strm = LZMA_STREAM_INIT;
-    if (lzma_stream_decoder(&strm, UINT64_MAX, LZMA_CONCATENATED) != LZMA_OK) {
-        close(in); close(out); unlink(temp); return 0;
+    int in=open(ARCHIVE,O_RDONLY|O_NOFOLLOW); if(in<0)return -1;
+    char tmp[] = CACHE "/payload.tar.XXXXXX"; int out=mkstemp(tmp);
+    if(out<0){close(in);return -1;} (void)fchmod(out,0600);
+    lzma_stream z=LZMA_STREAM_INIT;
+    if(lzma_stream_decoder(&z,UINT64_MAX,LZMA_CONCATENATED)!=LZMA_OK){close(in);close(out);unlink(tmp);return -1;}
+    unsigned char ib[65536],ob[65536]; int eof=0,ok=1; lzma_action act=LZMA_RUN;
+    for(;;){
+        if(!z.avail_in&&!eof){ssize_t n=read(in,ib,sizeof(ib));if(n<0&&errno==EINTR)continue;if(n<0){ok=0;break;}if(!n){eof=1;act=LZMA_FINISH;}z.next_in=ib;z.avail_in=(size_t)n;}
+        z.next_out=ob;z.avail_out=sizeof(ob);lzma_ret rc=lzma_code(&z,act);size_t n=sizeof(ob)-z.avail_out,off=0;
+        while(off<n){ssize_t w=write(out,ob+off,n-off);if(w<0&&errno==EINTR)continue;if(w<=0){ok=0;break;}off+=(size_t)w;}
+        if(!ok)break;if(rc==LZMA_STREAM_END)break;if(rc!=LZMA_OK){ok=0;break;}
     }
-    unsigned char ibuf[65536], obuf[65536];
-    lzma_action action = LZMA_RUN;
-    int ok = 1, eof = 0;
-    for (;;) {
-        if (strm.avail_in == 0 && !eof) {
-            ssize_t n = read(in, ibuf, sizeof(ibuf));
-            if (n < 0 && errno == EINTR) continue;
-            if (n < 0) { ok = 0; break; }
-            if (!n) { eof = 1; action = LZMA_FINISH; }
-            strm.next_in = ibuf; strm.avail_in = (size_t)n;
-        }
-        strm.next_out = obuf; strm.avail_out = sizeof(obuf);
-        lzma_ret rc = lzma_code(&strm, action);
-        size_t produced = sizeof(obuf) - strm.avail_out;
-        size_t off = 0;
-        while (off < produced) {
-            ssize_t n = write(out, obuf + off, produced - off);
-            if (n < 0 && errno == EINTR) continue;
-            if (n <= 0) { ok = 0; break; }
-            off += (size_t)n;
-        }
-        if (!ok) break;
-        if (rc == LZMA_STREAM_END) break;
-        if (rc != LZMA_OK || (eof && !strm.avail_in && rc != LZMA_OK)) {
-            ok = 0; break;
-        }
-    }
-    lzma_end(&strm);
-    close(in); close(out);
-    if (!ok) unlink(temp);
-    else if (rename(temp, CACHE "/verified-payload.tar") != 0) {
-        unlink(temp); ok = 0;
-    }
-    return ok;
+    lzma_end(&z);close(in);if(fsync(out))ok=0;close(out);
+    if(!ok){unlink(tmp);return -1;} if(rename(tmp,CACHE "/verified.tar")){unlink(tmp);return -1;}return 0;
 }
-
-/*
- * This binary intentionally refuses to apply an archive until its transaction
- * journal and recovery path are present. Verification is safe to run repeatedly;
- * it never modifies the live system or removes the pending marker.
- */
+static int allowed_path(const char *p)
+{
+    if(!p||!*p||p[0]=='/'||strstr(p,"../")||!strcmp(p,"..")||strstr(p,"/..")||strstr(p,"//"))return 0;
+    for(size_t i=0;i<sizeof(roots)/sizeof(roots[0]);i++){
+        size_t n=strlen(roots[i]); if(!strncmp(p,roots[i],n)&&(p[n]==0||p[n]=='/'))return 1;
+    }
+    return 0;
+}
+/* Inspect archive names before extraction; only known system roots are accepted. */
+static int check_tar_names(void)
+{
+    FILE *fp=popen("/usr/bin/tar -tf " CACHE "/verified.tar","r"); if(!fp)return -1;
+    char line[PATH_MAX+2]; int ok=1, count=0;
+    while(fgets(line,sizeof(line),fp)){
+        size_t n=strlen(line); if(n&&line[n-1]=='\n')line[--n]=0;
+        if(!n||n>=PATH_MAX||!allowed_path(line)){ok=0;break;}
+        if(++count>200000){ok=0;break;}
+    }
+    int status=pclose(fp);
+    return ok&&status==0&&count>0?0:-1;
+}
+static int append_journal(char kind,const char *root)
+{
+    int fd=open(JOURNAL,O_WRONLY|O_CREAT|O_APPEND,0600);if(fd<0)return -1;
+    char line[PATH_MAX+8];int n=snprintf(line,sizeof(line),"%c %s\n",kind,root);
+    int ok=write(fd,line,(size_t)n)==n&&fsync(fd)==0;close(fd);return ok?0:-1;
+}
+static int rollback(void)
+{
+    FILE *fp=fopen(JOURNAL,"r");if(!fp)return errno==ENOENT?0:-1;
+    char lines[MAX_OPS][PATH_MAX+8];int n=0;char line[PATH_MAX+8];
+    while(fgets(line,sizeof(line),fp)){if(n==MAX_OPS){fclose(fp);return -1;}strlcpy(lines[n++],line,sizeof(lines[0]));}
+    fclose(fp);
+    while(n--){
+        char kind=lines[n][0],*name=lines[n]+2;name[strcspn(name,"\r\n")]=0;
+        char live[PATH_MAX],saved[PATH_MAX];
+        if(snprintf(live,sizeof(live),"/%s",name)>=(int)sizeof(live)||
+           snprintf(saved,sizeof(saved),BACKUP "/%s",name)>=(int)sizeof(saved))return -1;
+        if(kind=='E'){
+            if(exists(saved)){if(remove_tree(live))return -1;if(rename(saved,live))return -1;}
+        }else if(kind=='N'){if(remove_tree(live))return -1;}
+    }
+    if(remove_tree(BACKUP)||remove_tree(STAGING))return -1;
+    if(unlink(JOURNAL)&&errno!=ENOENT)return -1;
+    (void)sync_dir(CACHE);return 0;
+}
+static int apply_update(void)
+{
+    if(exists(JOURNAL)){message("pd-update-installer: recovering interrupted update\n");if(rollback())return -1;}
+    if(remove_tree(STAGING)||remove_tree(BACKUP))return -1;
+    if(mkdir(STAGING,0700)||mkdir(BACKUP,0700))return -1;
+    char *const tarv[]={"/usr/bin/tar","-xf",CACHE "/verified.tar","-C",STAGING,NULL};
+    if(run("/usr/bin/tar",tarv)!=0)return -1;
+    int count=0;
+    for(size_t i=0;i<sizeof(roots)/sizeof(roots[0]);i++){
+        char staged[PATH_MAX],live[PATH_MAX],saved[PATH_MAX];
+        snprintf(staged,sizeof(staged),STAGING "/%s",roots[i]);
+        if(!exists(staged))continue;
+        snprintf(live,sizeof(live),"/%s",roots[i]);
+        snprintf(saved,sizeof(saved),BACKUP "/%s",roots[i]);
+        int had=exists(live);
+        if(append_journal(had?'E':'N',roots[i]))return -1;
+        if(had&&rename(live,saved))return -1;
+        if(rename(staged,live))return -1;
+        (void)sync_dir("/");
+        if(++count>MAX_OPS)return -1;
+    }
+    if(!count)return -1;
+    if(remove_tree(BACKUP)||remove_tree(STAGING))return -1;
+    if(unlink(JOURNAL))return -1;
+    (void)sync_dir(CACHE);
+    return 0;
+}
+static void boot_launchd(void)
+{
+    char *const av[]={"/sbin/launchd",NULL};execv(av[0],av);
+    message("pd-update-installer: cannot start launchd after rollback\n");for(;;)pause();
+}
 int main(void)
 {
-    unsigned char *manifest = NULL, *signature = NULL;
-    size_t manifest_len = 0, signature_len = 0;
-    char version[128] = {0};
-    unsigned char digest[32];
-    uint64_t archive_size = 0;
-
-    if (read_file(MANIFEST, &manifest, &manifest_len, MAX_MANIFEST))
-        fail("cannot read manifest");
-    if (read_file(SIGNATURE, &signature, &signature_len, 64))
-        fail("cannot read signature");
-    if (!verify_signature(manifest, manifest_len, signature, signature_len)) {
-        fprintf(stderr, "pd-update-installer: manifest signature rejected\n");
-        return 1;
+    unsigned char *m=NULL,*s=NULL,digest[32];size_t ml=0,sl=0;uint64_t size=0;
+    /* A stale journal is always rolled back before considering a new update. */
+    if(exists(JOURNAL)&&rollback()){message("pd-update-installer: rollback failed; refusing startup\n");for(;;)pause();}
+    if(read_file(MANIFEST,&m,&ml,MAX_MANIFEST)||read_file(SIGNATURE,&s,&sl,64)){message("pd-update-installer: missing update metadata\n");boot_launchd();}
+    if(!verify_signature(m,ml,s,sl)||parse_manifest(m,ml,digest,&size)){free(m);free(s);message("pd-update-installer: signature or manifest rejected\n");boot_launchd();}
+    free(m);free(s);
+    if(!verify_archive(digest,size)||decompress_xz()||check_tar_names()){message("pd-update-installer: archive verification failed\n");boot_launchd();}
+    if(apply_update()){
+        message("pd-update-installer: installation failed; rolling back\n");
+        if(rollback()){message("pd-update-installer: rollback failed; refusing startup\n");for(;;)pause();}
+        (void)unlink(CACHE "/pending");boot_launchd();
     }
-    if (parse_manifest(manifest, manifest_len, version, digest, &archive_size)) {
-        fprintf(stderr, "pd-update-installer: malformed manifest\n");
-        return 1;
-    }
-    free(manifest); free(signature);
-
-    if (!verify_archive(digest, archive_size)) {
-        fprintf(stderr, "pd-update-installer: archive hash/size mismatch\n");
-        return 1;
-    }
-    if (!validate_xz()) {
-        fprintf(stderr, "pd-update-installer: XZ stream validation failed\n");
-        return 1;
-    }
-
-    fprintf(stderr,
-        "pd-update-installer: verified update %s; installation is disabled "
-        "until transaction recovery is configured\n", version);
-    return 2;
+    (void)unlink(CACHE "/pending");
+    (void)unlink(MANIFEST);(void)unlink(SIGNATURE);(void)unlink(ARCHIVE);(void)unlink(CACHE "/verified.tar");
+    message("pd-update-installer: update applied; rebooting\n");
+    char *const rv[]={"/sbin/reboot",NULL};execv(rv[0],rv);
+    message("pd-update-installer: reboot command failed; starting launchd\n");boot_launchd();
 }
