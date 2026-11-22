@@ -584,7 +584,6 @@ EOF
       $staging/usr/libexec/pd-dbus-launch \
       $staging/usr/libexec/pd-root-remount
     if [ -x "$staging/usr/libexec/pd-update-helper" ]; then
-      chown 0:0 "$staging/usr/libexec/pd-update-helper"
       chmod 4755 "$staging/usr/libexec/pd-update-helper"
     fi
 ${lib.optionalString (rootFsType == "hfs") ''
