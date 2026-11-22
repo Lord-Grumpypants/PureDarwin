@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/mount.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -84,6 +85,13 @@ int main(int argc,char **argv)
         fprintf(stderr,"pd-update-helper: privileged helper; usage: check|install\n");return 2;
     }
     if(secure_cache()){fprintf(stderr,"pd-update-helper: update cache is not root-owned\n");return 1;}
+    if(!strcmp(argv[1],"install")){
+        struct statfs fs;
+        if(statfs("/",&fs)==0 && !strcmp(fs.f_fstypename,"apfs")){
+            fprintf(stderr,"pd-update-helper: installation is disabled on APFS roots\n");
+            return 1;
+        }
+    }
     const char *mt=CACHE "/.manifest.download",*st=CACHE "/.manifest.sig.download";
     unlink(mt);unlink(st);
     if(fetch("manifest",mt)||fetch("manifest.sig",st)||!signature_ok(mt,st)){
