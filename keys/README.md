@@ -21,3 +21,15 @@ The archive contains only the supported top-level system roots: `System`,
 those directories with a persistent rollback journal. Updates are currently
 disabled for APFS images. Do not publish an update until its public key is
 included in the image.
+
+After committing the public key and building an image, enable GitHub Pages for
+the fork with the `gh-pages` branch and `/(root)` as its source. Publish each
+signed release with:
+
+```sh
+./scripts/publish-pd-update.sh ./pd-update-release
+```
+
+The Settings pane downloads from the matching Pages URL. The update installer
+does not trust a key from the download cache; the public key must be present in
+the booted system image.
