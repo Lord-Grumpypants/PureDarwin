@@ -56,7 +56,9 @@ static int version(const char *path,char *out,size_t cap)
 static int secure_cache(void)
 {
     struct stat st;
-    if(lstat(CACHE,&st)&&errno==ENOENT){if(mkdir(CACHE,0700))return -1;if(lstat(CACHE,&st))return -1;}
+    if(lstat(CACHE,&st)){
+        if(errno!=ENOENT||mkdir(CACHE,0700)||lstat(CACHE,&st))return -1;
+    }
     return S_ISDIR(st.st_mode)&&!S_ISLNK(st.st_mode)&&st.st_uid==0?0:-1;
 }
 int main(int argc,char **argv)
