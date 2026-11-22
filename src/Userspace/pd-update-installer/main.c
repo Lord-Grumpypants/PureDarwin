@@ -159,15 +159,33 @@ static int allowed_path(const char *p)
 /* Inspect archive names before extraction; only known system roots are accepted. */
 static int check_tar_names(void)
 {
-    FILE *fp=popen("/usr/bin/tar -tf " CACHE "/verified.tar","r"); if(!fp)return -1;
-    char line[PATH_MAX+2]; int ok=1, count=0;
-    while(fgets(line,sizeof(line),fp)){
-        size_t n=strlen(line); if(n&&line[n-1]=='\n')line[--n]=0;
-        if(!n||n>=PATH_MAX||!allowed_path(line)){ok=0;break;}
-        if(++count>200000){ok=0;break;}
+    int fds[2];
+    if (pipe(fds) != 0) return -1;
+    pid_t pid = fork();
+    if (pid < 0) { close(fds[0]); close(fds[1]); return -1; }
+    if (pid == 0) {
+        close(fds[0]);
+        if (dup2(fds[1], STDOUT_FILENO) < 0) _exit(127);
+        close(fds[1]);
+        execl("/usr/bin/tar", "tar", "-tf", CACHE "/verified.tar", (char *)NULL);
+        _exit(127);
     }
-    int status=pclose(fp);
-    return ok&&status==0&&count>0?0:-1;
+    close(fds[1]);
+    FILE *fp = fdopen(fds[0], "r");
+    if (!fp) { close(fds[0]); (void)waitpid(pid, NULL, 0); return -1; }
+    char line[PATH_MAX + 2];
+    int ok = 1, count = 0;
+    while (fgets(line, sizeof(line), fp)) {
+        size_t n = strlen(line);
+        if (n && line[n - 1] == '\n') line[--n] = 0;
+        if (!n || n >= PATH_MAX || !allowed_path(line)) { ok = 0; break; }
+        if (++count > 200000) { ok = 0; break; }
+    }
+    if (ferror(fp)) ok = 0;
+    fclose(fp);
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) if (errno != EINTR) return -1;
+    return ok && WIFEXITED(status) && WEXITSTATUS(status) == 0 && count > 0 ? 0 : -1;
 }
 static int append_journal(char kind,const char *root)
 {
