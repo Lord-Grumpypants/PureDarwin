@@ -160,6 +160,12 @@ static int rollback(void)
     char lines[MAX_OPS][PATH_MAX+8];int n=0;char line[PATH_MAX+8];
     while(fgets(line,sizeof(line),fp)){if(n==MAX_OPS){fclose(fp);return -1;}strlcpy(lines[n++],line,sizeof(lines[0]));}
     fclose(fp);
+    /* A durable C record is the transaction commit point. */
+    if(n && lines[n-1][0]=='C'){
+        if(remove_tree(BACKUP)||remove_tree(STAGING))return -1;
+        if(unlink(JOURNAL)&&errno!=ENOENT)return -1;
+        (void)sync_dir(CACHE);return 0;
+    }
     while(n--){
         char kind=lines[n][0],*name=lines[n]+2;name[strcspn(name,"\r\n")]=0;
         char live[PATH_MAX],saved[PATH_MAX];
@@ -195,6 +201,7 @@ static int apply_update(void)
         if(++count>MAX_OPS)return -1;
     }
     if(!count)return -1;
+    if(append_journal('C',"committed"))return -1;
     if(remove_tree(BACKUP)||remove_tree(STAGING))return -1;
     if(unlink(JOURNAL))return -1;
     (void)sync_dir(CACHE);
