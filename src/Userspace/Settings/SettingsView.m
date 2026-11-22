@@ -13,6 +13,7 @@
 #import "SoundPane.h"
 #include "pdaccounts_client.h"
 #include <pwd.h>
+#include <errno.h>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
