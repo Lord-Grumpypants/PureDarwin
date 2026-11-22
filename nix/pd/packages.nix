@@ -994,6 +994,7 @@
   };
   settings = callPackage ../pkgs/apps/settings.nix {
     librsvg = pkgs.librsvg;
+    openssl = self.openssl;
     src = ../../src/Userspace/Settings;
     appleSdk = pkgs.appleSdk;
   };
