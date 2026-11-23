@@ -50,9 +50,20 @@ static const struct { unsigned light, dark; } palette[] = {
     { 0xb9aea4, 0x7a6f66 },
 };
 
+static BOOL appearanceIsDark(NSAppearance *appearance)
+{
+    if (appearance == nil)
+        appearance = [NSApp effectiveAppearance];
+
+    NSString *match = [appearance bestMatchFromAppearancesWithNames:
+        @[ NSAppearanceNameAqua, NSAppearanceNameDarkAqua ]];
+
+    return [match isEqualToString:NSAppearanceNameDarkAqua];
+}
+
 static BOOL darkNow(void)
 {
-    return [[NSAppearance currentDrawingAppearance] _isDark];
+    return appearanceIsDark([NSAppearance currentDrawingAppearance]);
 }
 
 // palette colours follow the appearance, the rest are fixed
@@ -65,7 +76,7 @@ static NSColor *rgb(int r, int g, int b)
             continue;
         unsigned dark = palette[i].dark;
         return [NSColor colorWithName:nil dynamicProvider:^NSColor *(NSAppearance *a) {
-            unsigned v = [a _isDark] ? dark : light;
+            unsigned v = appearanceIsDark(a) ? dark : light;
             return fixed(v >> 16, (v >> 8) & 0xff, v & 0xff);
         }];
     }
@@ -118,14 +129,33 @@ static NSImage *image(NSString *name)
 
     if (cache == nil)
         cache = [[NSMutableDictionary alloc] init];
+
     if ((img = cache[name]) == nil) {
-        NSString *path = [name isAbsolutePath] ? name : [[NSBundle mainBundle] pathForResource:name ofType:@"png"];
+        NSString *path = [name isAbsolutePath] ? name : nil;
+
+        if (path == nil) {
+            NSBundle *bundle = [NSBundle mainBundle];
+
+            path = [bundle pathForResource:name ofType:@"png"];
+
+            if (path == nil)
+                path = [bundle pathForResource:name ofType:@"svg" inDirectory:@"colour"];
+
+            if (path == nil)
+                path = [bundle pathForResource:name ofType:@"svg" inDirectory:@"symbolic"];
+
+            if (path == nil)
+                path = [bundle pathForResource:name ofType:@"pdf"];
+        }
 
         img = path != nil ? [[[NSImage alloc] initWithContentsOfFile:path] autorelease] : nil;
+
         if (img == nil)
             return nil;
+
         cache[name] = img;
     }
+
     return img;
 }
 
@@ -764,7 +794,7 @@ static void drawCapsule(NSRect b, BOOL primary)
     NSDictionary *white = attrs(@"Inter-Regular", 12, [NSColor colorWithCalibratedWhite:1 alpha:0.92]);
     NSString *host = [NSString stringWithFormat:@"%@ · %@", PDHostName(), NSUserName() ?: @"root"];
     NSSize hs = [host sizeWithAttributes:white];
-    NSImage *logo = image(@"beak-white");
+    NSImage *logo = image(@"beak");
 
     [NSGraphicsContext saveGraphicsState];
     [NSBezierPath clipRect:r];
