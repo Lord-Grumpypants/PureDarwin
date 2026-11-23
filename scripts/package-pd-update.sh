@@ -1,12 +1,14 @@
 #!/bin/sh
 set -eu
-if [ "$#" -ne 3 ]; then
-  echo "usage: $0 <system-root> <version> <ed25519-private-key>" >&2
+if [ "$#" -ne 4 ]; then
+  echo "usage: $0 <system-root> <version> <ed25519-private-key> <archive-url>" >&2
   exit 2
 fi
 ROOT=$(CDPATH= cd -- "$1" && pwd)
 VERSION=$2
 KEY=$(CDPATH= cd -- "$(dirname -- "$3")" && pwd)/$(basename -- "$3")
+URL=$4
+case "$URL" in https://github.com/Lord-Grumpypants/PureDarwin/releases/download/*/update.tar.xz) ;; *) echo "invalid GitHub Release asset URL" >&2; exit 1 ;; esac
 OUT=${PD_UPDATE_OUT:-"$PWD/pd-update-release"}
 mkdir -p "$OUT"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/pd-update.XXXXXX")
@@ -41,10 +43,11 @@ SIZE=$(python3 -c 'import os,sys; print(os.path.getsize(sys.argv[1]))' "$TMP/upd
   printf 'version=%s\n' "$VERSION"
   printf 'sha256=%s\n' "$HASH"
   printf 'size=%s\n' "$SIZE"
+  printf 'url=%s\n' "$URL"
 } > "$TMP/manifest"
 openssl pkeyutl -sign -rawin -inkey "$KEY" -in "$TMP/manifest" -out "$TMP/manifest.sig"
 cp "$TMP/update.tar.xz" "$OUT/update.tar.xz"
 cp "$TMP/manifest" "$OUT/manifest"
 cp "$TMP/manifest.sig" "$OUT/manifest.sig"
 echo "Created signed update in $OUT"
-echo "Publish these three files together: manifest, manifest.sig, update.tar.xz"
+echo "Publish manifest and manifest.sig to the update feed; upload update.tar.xz to the GitHub Release."
