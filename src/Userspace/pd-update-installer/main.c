@@ -25,7 +25,9 @@
 #define TRUSTED_KEY "/System/Library/PrivateFrameworks/PDUpdate.framework/Resources/update-ed25519.pub"
 #define MAX_MANIFEST 4096
 #define MAX_ARCHIVE (8ULL * 1024ULL * 1024ULL * 1024ULL)
-#define MAX_OPS 16
+#define MAX_OPS 4096
+#define MAX_JOURNAL (4U * 1024U * 1024U)
+#define OBSOLETE STAGING "/System/Library/PDUpdate/obsolete"
 
 static const char *roots[] = { "System", "usr", "bin", "sbin", "etc", "Applications" };
 
@@ -164,11 +166,19 @@ static int decompress_xz(void)
 static int allowed_path(const char *p)
 {
     if(!p||!*p||p[0]=='/'||strstr(p,"../")||!strcmp(p,"..")||strstr(p,"/..")||strstr(p,"//"))return 0;
+    if(!strncmp(p,"Applications",12)&&(p[12]==0||p[12]=='/')){
+        /* Applications is shared with the user: only <name>.app bundles are ours. */
+        if(!p[12]||!p[13])return 1;
+        const char *name=p+13,*slash=strchr(name,'/');
+        size_t n=slash?(size_t)(slash-name):strlen(name);
+        return n>4&&!strncmp(name+n-4,".app",4);
+    }
     for(size_t i=0;i<sizeof(roots)/sizeof(roots[0]);i++){
         size_t n=strlen(roots[i]); if(!strncmp(p,roots[i],n)&&(p[n]==0||p[n]=='/'))return 1;
     }
     return 0;
 }
+
 /* Inspect archive names before extraction; only known system roots are accepted. */
 static int check_tar_names(void)
 {
@@ -206,51 +216,149 @@ static int append_journal(char kind,const char *root)
     char line[PATH_MAX+8];int n=snprintf(line,sizeof(line),"%c %s\n",kind,root);
     int ok=write(fd,line,(size_t)n)==n&&fsync(fd)==0;close(fd);return ok?0:-1;
 }
+static int g_ops;
+
+/* A journal line is "<K> <relative path>"; K is E (replaced), N (new), D (removed) or C (commit). */
+static int journal_valid(const char *op)
+{
+    if (!op[0] || op[1] != ' ') return 0;
+    if (op[0] == 'C') return 1;
+    if (op[0] != 'E' && op[0] != 'N' && op[0] != 'D') return 0;
+    return allowed_path(op + 2) && strcmp(op + 2, "Applications");
+}
+/* mkdir -p for the parent directories of an absolute path */
+static int mkparents(const char *path)
+{
+    char tmp[PATH_MAX];
+    if (strlcpy(tmp, path, sizeof(tmp)) >= sizeof(tmp)) return -1;
+    for (char *p = tmp + 1; *p; p++) {
+        if (*p != '/') continue;
+        *p = 0;
+        if (mkdir(tmp, 0700) && errno != EEXIST) return -1;
+        *p = '/';
+    }
+    return 0;
+}
 static int rollback(void)
 {
-    FILE *fp=fopen(JOURNAL,"r");if(!fp)return errno==ENOENT?0:-1;
-    char lines[MAX_OPS][PATH_MAX+8];int n=0;char line[PATH_MAX+8];
-    while(fgets(line,sizeof(line),fp)){if(n==MAX_OPS){fclose(fp);return -1;}strlcpy(lines[n++],line,sizeof(lines[0]));}
-    fclose(fp);
-    /* A durable C record is the transaction commit point. */
-    if(n && lines[n-1][0]=='C'){
-        if(remove_tree(BACKUP)||remove_tree(STAGING))return -1;
-        if(unlink(JOURNAL)&&errno!=ENOENT)return -1;
-        (void)sync_dir(CACHE);return 0;
+    unsigned char *buf = NULL;
+    size_t len = 0;
+    if (read_file(JOURNAL, &buf, &len, MAX_JOURNAL)) return errno == ENOENT ? 0 : -1;
+    int torn = len && buf[len - 1] != '\n', rc = -1;
+    char **ops = calloc(MAX_OPS + 1, sizeof(*ops));
+    if (!ops) { free(buf); return -1; }
+    size_t n = 0;
+    char *save = NULL;
+    for (char *l = strtok_r((char *)buf, "\n", &save); l; l = strtok_r(NULL, "\n", &save)) {
+        if (n >= MAX_OPS) goto out;
+        ops[n++] = l;
     }
-    while(n--){
-        char kind=lines[n][0],*name=lines[n]+2;name[strcspn(name,"\r\n")]=0;
-        char live[PATH_MAX],saved[PATH_MAX];
-        if(snprintf(live,sizeof(live),"/%s",name)>=(int)sizeof(live)||
-           snprintf(saved,sizeof(saved),BACKUP "/%s",name)>=(int)sizeof(saved))return -1;
-        if(kind=='E'){
-            if(exists(saved)){if(remove_tree(live))return -1;if(rename(saved,live))return -1;}
-        }else if(kind=='N'){if(remove_tree(live))return -1;}
+    /* A torn final record was never fully written, so its operation never started. */
+    if (torn && n) n--;
+    for (size_t i = 0; i < n; i++) if (!journal_valid(ops[i])) goto out;
+    /* A durable C record is the transaction commit point: nothing to undo. */
+    if (!(n && ops[n - 1][0] == 'C')) {
+        for (size_t i = n; i-- > 0; ) {
+            if (ops[i][0] == 'C') continue;
+            const char *rel = ops[i] + 2;
+            char live[PATH_MAX], saved[PATH_MAX];
+            if (snprintf(live, sizeof(live), "/%s", rel) >= (int)sizeof(live) ||
+                snprintf(saved, sizeof(saved), BACKUP "/%s", rel) >= (int)sizeof(saved)) goto out;
+            if (ops[i][0] == 'N') {
+                if (remove_tree(live)) goto out;
+            } else if (exists(saved)) {           /* E or D */
+                if (remove_tree(live) || rename(saved, live)) goto out;
+            }
+        }
     }
-    if(remove_tree(BACKUP)||remove_tree(STAGING))return -1;
-    if(unlink(JOURNAL)&&errno!=ENOENT)return -1;
-    (void)sync_dir(CACHE);return 0;
+    if (remove_tree(BACKUP) || remove_tree(STAGING)) goto out;
+    if (unlink(JOURNAL) && errno != ENOENT) goto out;
+    (void)sync_dir(CACHE);
+    rc = 0;
+out:
+    free(ops);
+    free(buf);
+    return rc;
+}
+/* rel is e.g. "System" or "Applications/Calculator.app" */
+static int swap_entry(const char *rel)
+{
+    char staged[PATH_MAX], live[PATH_MAX], saved[PATH_MAX];
+    if (snprintf(staged, sizeof(staged), STAGING "/%s", rel) >= (int)sizeof(staged) ||
+        snprintf(live, sizeof(live), "/%s", rel) >= (int)sizeof(live) ||
+        snprintf(saved, sizeof(saved), BACKUP "/%s", rel) >= (int)sizeof(saved)) return -1;
+    if (++g_ops >= MAX_OPS - 1) return -1;
+    int had = exists(live);
+    if (append_journal(had ? 'E' : 'N', rel)) return -1;   /* journal BEFORE touching live */
+    if (had && (mkparents(saved) || rename(live, saved))) return -1;
+    if (rename(staged, live)) return -1;
+    return 0;
+}
+/* Replace each staged Applications/<name>.app individually; anything else in /Applications stays. */
+static int swap_apps(int *count)
+{
+    struct dirent **list = NULL;
+    int total = scandir(STAGING "/Applications", &list, NULL, NULL), rc = 0;
+    if (total < 0) return errno == ENOENT ? 0 : -1;
+    for (int i = 0; i < total; i++) {
+        const char *name = list[i]->d_name;
+        size_t n = strlen(name);
+        if (rc || name[0] == '.' || n < 5 || strcmp(name + n - 4, ".app")) continue;
+        char rel[PATH_MAX], staged[PATH_MAX];
+        struct stat st;
+        if (snprintf(rel, sizeof(rel), "Applications/%s", name) >= (int)sizeof(rel) ||
+            snprintf(staged, sizeof(staged), STAGING "/%s", rel) >= (int)sizeof(staged) ||
+            lstat(staged, &st) || !S_ISDIR(st.st_mode) || swap_entry(rel)) rc = -1;
+        else (*count)++;
+    }
+    for (int i = 0; i < total; i++) free(list[i]);
+    free(list);
+    (void)sync_dir("/Applications");
+    return rc;
+}
+/* Payload may list system apps that no longer ship, one "Applications/<name>.app" per line. */
+static int remove_obsolete(int *count)
+{
+    unsigned char *buf = NULL;
+    size_t len = 0;
+    if (read_file(OBSOLETE, &buf, &len, 65536)) return errno == ENOENT ? 0 : -1;
+    int rc = 0;
+    char *save = NULL;
+    for (char *l = strtok_r((char *)buf, "\n", &save); l && !rc; l = strtok_r(NULL, "\n", &save)) {
+        size_t n = strlen(l);
+        char live[PATH_MAX], saved[PATH_MAX];
+        if (n < 18 || strncmp(l, "Applications/", 13) || strcmp(l + n - 4, ".app") ||
+            strchr(l + 13, '/') || !allowed_path(l) ||
+            snprintf(live, sizeof(live), "/%s", l) >= (int)sizeof(live) ||
+            snprintf(saved, sizeof(saved), BACKUP "/%s", l) >= (int)sizeof(saved)) { rc = -1; break; }
+        if (!exists(live)) continue;
+        if (++g_ops >= MAX_OPS - 1 || append_journal('D', l) ||
+            mkparents(saved) || rename(live, saved)) { rc = -1; break; }
+        (*count)++;
+    }
+    free(buf);
+    (void)sync_dir("/Applications");
+    return rc;
 }
 static int apply_update(void)
 {
     if(exists(JOURNAL)){message("pd-update-installer: recovering interrupted update\n");if(rollback())return -1;}
+    g_ops=0;
     if(remove_tree(STAGING)||remove_tree(BACKUP))return -1;
     if(mkdir(STAGING,0700)||mkdir(BACKUP,0700))return -1;
     char *const tarv[]={"/usr/bin/tar","-xf",CACHE "/verified.tar","-C",STAGING,NULL};
     if(run("/usr/bin/tar",tarv)!=0)return -1;
     int count=0;
+    /* Read the obsolete list while it is still in STAGING: the System swap below moves it. */
+    if(remove_obsolete(&count))return -1;
     for(size_t i=0;i<sizeof(roots)/sizeof(roots[0]);i++){
-        char staged[PATH_MAX],live[PATH_MAX],saved[PATH_MAX];
-        snprintf(staged,sizeof(staged),STAGING "/%s",roots[i]);
+        if(!strcmp(roots[i],"Applications")){ if(swap_apps(&count))return -1; continue; }
+        char staged[PATH_MAX];
+        if(snprintf(staged,sizeof(staged),STAGING "/%s",roots[i])>=(int)sizeof(staged))return -1;
         if(!exists(staged))continue;
-        snprintf(live,sizeof(live),"/%s",roots[i]);
-        snprintf(saved,sizeof(saved),BACKUP "/%s",roots[i]);
-        int had=exists(live);
-        if(append_journal(had?'E':'N',roots[i]))return -1;
-        if(had&&rename(live,saved))return -1;
-        if(rename(staged,live))return -1;
+        if(swap_entry(roots[i]))return -1;
         (void)sync_dir("/");
-        if(++count>MAX_OPS)return -1;
+        count++;
     }
     if(!count)return -1;
     if(append_journal('C',"committed"))return -1;

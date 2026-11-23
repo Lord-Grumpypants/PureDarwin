@@ -77,8 +77,10 @@ jobs:
           echo "path=$RUNNER_TEMP/system-root" >> "$GITHUB_OUTPUT"
 
       - name: Package and sign update
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         shell: bash
+        env:
+          PD_UPDATE_SKIP_ROOTS: ${{ vars.PD_UPDATE_SKIP_ROOTS }}
         run: |
           set -euo pipefail
           key="$RUNNER_TEMP/pd-update-ed25519.pem"
@@ -96,6 +98,15 @@ jobs:
           cp "$RUNNER_TEMP/update-release/"{manifest,manifest.sig} site/updates/x86_64/
           printf '<!doctype html>\n<meta charset="utf-8">\n<title>PureDarwin updates</title>\n<p>PureDarwin update feed.</p>\n' > site/index.html
           touch site/.nojekyll
+
+      - name: Upload test update (manual runs only)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pd-update-test-${{ env.UPDATE_VERSION }}
+          path: ${{ runner.temp }}/update-release
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Publish GitHub Release asset
         if: github.event_name == 'release'

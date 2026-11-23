@@ -13,8 +13,20 @@ OUT=${PD_UPDATE_OUT:-"$PWD/pd-update-release"}
 mkdir -p "$OUT"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/pd-update.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
+skip() { case " ${PD_UPDATE_SKIP_ROOTS:-} " in *" $1 "*) return 0 ;; esac; return 1; }
+# /Applications is shared with the user: the installer only swaps <name>.app bundles
+# and rejects an archive with anything else under Applications/.
+if [ -d "$ROOT/Applications" ] && ! skip Applications; then
+  EXTRA=$(find "$ROOT/Applications" -mindepth 1 -maxdepth 1 ! -name '*.app' | head -n 5)
+  if [ -n "$EXTRA" ]; then
+    echo "Applications contains entries the installer would reject (only <name>.app is allowed):" >&2
+    echo "$EXTRA" >&2
+    exit 1
+  fi
+fi
 set --
 for d in System usr bin sbin etc Applications; do
+  skip "$d" && continue
   [ ! -e "$ROOT/$d" ] || set -- "$@" "$d"
 done
 [ "$#" -gt 0 ] || { echo "No supported system roots found" >&2; exit 1; }
