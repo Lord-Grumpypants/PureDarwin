@@ -27,7 +27,7 @@
 #define MAX_ARCHIVE (8ULL * 1024ULL * 1024ULL * 1024ULL)
 #define MAX_OPS 16
 
-static const char *roots[] = { "System", "usr", "bin", "sbin", "etc", "Applications" };
+static const char *roots[] = { "System", "usr", "bin", "sbin", "etc" };
 
 static void message(const char *s) { (void)write(2, s, strlen(s)); }
 static int run(const char *path, char *const argv[])
@@ -90,16 +90,30 @@ static int read_file(const char *path, unsigned char **out, size_t *length, size
     }
     close(fd); p[n] = 0; *out = p; *length = n; return 0;
 }
-static int parse_manifest(const unsigned char *p, size_t n, unsigned char digest[32], uint64_t *size)
+static int parse_manifest(const unsigned char *p, size_t n, unsigned char digest[32], uint64_t *size, char *build, size_t build_cap)
 {
     if (!n || n >= MAX_MANIFEST || memchr(p, 0, n)) return -1;
     char *copy = strndup((const char *)p, n), *save = NULL;
     if (!copy) return -1;
     char *line = strtok_r(copy, "\n", &save);
     if (!line || strcmp(line, "PDUPDATE1")) { free(copy); return -1; }
-    int hash = 0, bytes = 0, version = 0, url = 0;
+    int hash = 0, bytes = 0, version = 0, build_found = 0, url = 0;
     while ((line = strtok_r(NULL, "\n", &save))) {
         if (!strncmp(line, "version=", 8) && !version && line[8]) version = 1;
+        else if (!strncmp(line, "build=", 6) && !build_found) {
+            const char *value = line + 6;
+            size_t n = strlen(value);
+            if (!n || n >= build_cap) { free(copy); return -1; }
+            for (size_t i = 0; i < n; i++) {
+                char c = value[i];
+                if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                      (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-')) {
+                    free(copy); return -1;
+                }
+            }
+            memcpy(build, value, n + 1);
+            build_found = 1;
+        }
         else if (!strncmp(line, "sha256=", 7) && !hash && strlen(line + 7) == 64) {
             for (int i=0;i<32;i++) { unsigned v; if (sscanf(line+7+i*2,"%2x",&v)!=1) { free(copy); return -1; } digest[i]=(unsigned char)v; }
             hash=1;
@@ -122,7 +136,22 @@ static int parse_manifest(const unsigned char *p, size_t n, unsigned char digest
             url = 1;
         } else { free(copy); return -1; }
     }
-    free(copy); return hash && bytes && version && url ? 0 : -1;
+    free(copy); return hash && bytes && version && build_found && url ? 0 : -1;
+}
+static int installed_build(char *out,size_t cap)
+{
+    FILE *fp=fopen("/System/Library/CoreServices/SystemVersion.plist","r");
+    if(!fp)return -1;
+    char line[512];int key_found=0,result=-1;
+    while(fgets(line,sizeof(line),fp)){
+        if(!key_found){if(strstr(line,"<key>ProductBuildVersion</key>"))key_found=1;continue;}
+        char *start=strstr(line,"<string>"),*end=start?strstr(start+8,"</string>"):NULL;
+        if(!start||!end)break;
+        size_t n=(size_t)(end-(start+8));
+        if(!n||n>=cap)break;
+        memcpy(out,start+8,n);out[n]=0;result=0;break;
+    }
+    fclose(fp);return result;
 }
 static int verify_signature(const unsigned char *m,size_t ml,const unsigned char *s,size_t sl)
 {
@@ -267,12 +296,20 @@ static void boot_launchd(void)
 }
 int main(void)
 {
-    unsigned char *m=NULL,*s=NULL,digest[32];size_t ml=0,sl=0;uint64_t size=0;
+    unsigned char *m=NULL,*s=NULL,digest[32];size_t ml=0,sl=0;uint64_t size=0;char build[128],current[128];
     /* A stale journal is always rolled back before considering a new update. */
     if(exists(JOURNAL)&&rollback()){message("pd-update-installer: rollback failed; refusing startup\n");for(;;)pause();}
     if(read_file(MANIFEST,&m,&ml,MAX_MANIFEST)||read_file(SIGNATURE,&s,&sl,64)){message("pd-update-installer: missing update metadata\n");boot_launchd();}
-    if(!verify_signature(m,ml,s,sl)||parse_manifest(m,ml,digest,&size)){free(m);free(s);message("pd-update-installer: signature or manifest rejected\n");boot_launchd();}
+    if(!verify_signature(m,ml,s,sl)||parse_manifest(m,ml,digest,&size,build,sizeof(build))){
+        free(m);free(s);message("pd-update-installer: signature or manifest rejected\n");boot_launchd();
+    }
     free(m);free(s);
+    if(installed_build(current,sizeof(current))!=0){
+        message("pd-update-installer: cannot read installed build identifier\n");boot_launchd();
+    }
+    if(!strcmp(build,current)){
+        message("pd-update-installer: update build is already installed; skipping\n");boot_launchd();
+    }
     if(!verify_archive(digest,size)||decompress_xz()||check_tar_names()){message("pd-update-installer: archive verification failed\n");boot_launchd();}
     if(apply_update()){
         message("pd-update-installer: installation failed; rolling back\n");
