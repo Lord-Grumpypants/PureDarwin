@@ -88,12 +88,22 @@ jobs:
           openssl pkey -pubin -in keys/pd-update-ed25519.pub -outform DER > "$RUNNER_TEMP/image-public.der"
           openssl pkey -pubin -in "$RUNNER_TEMP/update-signing-key.pub" -outform DER > "$RUNNER_TEMP/secret-public.der"
           cmp "$RUNNER_TEMP/image-public.der" "$RUNNER_TEMP/secret-public.der"
+          archive_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$UPDATE_VERSION/update.tar.xz"
           PD_UPDATE_OUT="$RUNNER_TEMP/update-release" \
-            sh scripts/package-pd-update.sh "${{ steps.rootfs.outputs.path }}" "$UPDATE_VERSION" "$key"
+            sh scripts/package-pd-update.sh "${{ steps.rootfs.outputs.path }}" "$UPDATE_VERSION" "$key" "$archive_url"
           mkdir -p site/updates/x86_64
-          cp "$RUNNER_TEMP/update-release/"{manifest,manifest.sig,update.tar.xz} site/updates/x86_64/
+          cp "$RUNNER_TEMP/update-release/"{manifest,manifest.sig} site/updates/x86_64/
           printf '<!doctype html>\n<meta charset="utf-8">\n<title>PureDarwin updates</title>\n<p>PureDarwin update feed.</p>\n' > site/index.html
           touch site/.nojekyll
+
+      - name: Publish GitHub Release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view "$UPDATE_VERSION" >/dev/null 2>&1; then
+            gh release create "$UPDATE_VERSION" --title "PureDarwin $UPDATE_VERSION" --notes "PureDarwin signed system update."
+          fi
+          gh release upload "$UPDATE_VERSION" "$RUNNER_TEMP/update-release/update.tar.xz" --clobber
 
       - name: Unmount image
         if: always()
