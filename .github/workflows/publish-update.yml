@@ -59,7 +59,11 @@ jobs:
             extra-trusted-public-keys = hydra.lab004.dev-1:gPXVaEarmWgIFDuqmpf+9gXetBCC9jxzkZg+CZ8cC+M=
 
       - name: Build PureDarwin x86_64 image
-        run: nix build -L .#hydraJobs.release.full
+        run: |
+          nix build -L \
+            --option download-attempts 10 \
+            --fallback \
+            .#hydraJobs.release.full
 
       - name: Mount the image root filesystem
         id: rootfs
