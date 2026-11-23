@@ -43,16 +43,38 @@ static int signature_ok(const char *manifest,const char *signature)
     int ok=key&&EVP_PKEY_id(key)==EVP_PKEY_ED25519&&ctx&&EVP_DigestVerifyInit(ctx,NULL,NULL,NULL,key)==1&&EVP_DigestVerify(ctx,s,sl,m,ml)==1;
     EVP_MD_CTX_free(ctx);EVP_PKEY_free(key);free(m);free(s);return ok;
 }
-static int version(const char *path,char *out,size_t cap)
+static int manifest_metadata(const char *path,char *version_out,size_t version_cap,char *build_out,size_t build_cap)
 {
     FILE *fp=fopen(path,"r");if(!fp)return -1;
-    char line[256];int found=0;
+    char line[256];int version_found=0,build_found=0;
     if(!fgets(line,sizeof(line),fp)||strcmp(line,"PDUPDATE1\n")){fclose(fp);return -1;}
-    while(fgets(line,sizeof(line),fp))if(!strncmp(line,"version=",8)){
-        size_t n=strcspn(line+8,"\r\n");if(!n||n>=cap){fclose(fp);return -1;}
-        memcpy(out,line+8,n);out[n]=0;found=1;break;
+    while(fgets(line,sizeof(line),fp)){
+        const char *value=NULL;char *out=NULL;size_t cap=0;int *found=NULL;
+        if(!strncmp(line,"version=",8)){value=line+8;out=version_out;cap=version_cap;found=&version_found;}
+        else if(!strncmp(line,"build=",6)){value=line+6;out=build_out;cap=build_cap;found=&build_found;}
+        else continue;
+        size_t n=strcspn(value,"\r\n");
+        if(*found||!n||n>=cap){fclose(fp);return -1;}
+        for(size_t i=0;i<n;i++)if(!((value[i]>='A'&&value[i]<='Z')||(value[i]>='a'&&value[i]<='z')||
+            (value[i]>='0'&&value[i]<='9')||value[i]=='.'||value[i]=='_'||value[i]=='-')){fclose(fp);return -1;}
+        memcpy(out,value,n);out[n]=0;*found=1;
     }
-    fclose(fp);return found?0:-1;
+    fclose(fp);return version_found&&build_found?0:-1;
+}
+static int installed_build(char *out,size_t cap)
+{
+    FILE *fp=fopen("/System/Library/CoreServices/SystemVersion.plist","r");
+    if(!fp)return -1;
+    char line[512];int key_found=0,result=-1;
+    while(fgets(line,sizeof(line),fp)){
+        if(!key_found){if(strstr(line,"<key>ProductBuildVersion</key>"))key_found=1;continue;}
+        char *start=strstr(line,"<string>"),*end=start?strstr(start+8,"</string>"):NULL;
+        if(!start||!end)break;
+        size_t n=(size_t)(end-(start+8));
+        if(!n||n>=cap)break;
+        memcpy(out,start+8,n);out[n]=0;result=0;break;
+    }
+    fclose(fp);return result;
 }
 static int archive_url(const char *path, char *out, size_t cap)
 {
@@ -125,10 +147,18 @@ int main(int argc,char **argv)
     if(fetch(FEED "manifest",mt)||fetch(FEED "manifest.sig",st)||!signature_ok(mt,st)){
         unlink(mt);unlink(st);fprintf(stderr,"pd-update-helper: no valid signed update is available\n");return 1;
     }
-    char ver[128],url[1200];
-    if(version(mt,ver,sizeof(ver))||archive_url(mt,url,sizeof(url))){unlink(mt);unlink(st);return 1;}
+    char ver[128],build[128],installed[128],url[1200];
+    if(manifest_metadata(mt,ver,sizeof(ver),build,sizeof(build))||archive_url(mt,url,sizeof(url))||
+       installed_build(installed,sizeof(installed))){unlink(mt);unlink(st);return 1;}
     if(!strcmp(argv[1],"check")){
-        printf("Available update: %s\n",ver);unlink(mt);unlink(st);return 0;
+        if(!strcmp(build,installed))printf("PureDarwin %s (build %s) is up to date.\n",ver,build);
+        else printf("Available update: %s (build %s; installed build %s)\n",ver,build,installed);
+        unlink(mt);unlink(st);return 0;
+    }
+    if(!strcmp(build,installed)){
+        unlink(mt);unlink(st);
+        fprintf(stderr,"pd-update-helper: build %s is already installed\n",build);
+        return 1;
     }
     const char *at=CACHE "/.update.download";
     unlink(at);
@@ -138,11 +168,11 @@ int main(int argc,char **argv)
     }
     int fd=open(CACHE "/.pending.tmp",O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW,0600);
     if(fd<0)return 1;
-    dprintf(fd,"%s\n",ver);
+    dprintf(fd,"%s\n%s\n",ver,build);
     int failed = fsync(fd);
     if(close(fd))failed = 1;
     if(failed || rename(CACHE "/.pending.tmp",CACHE "/pending") || sync_cache())return 1;
     (void)chmod(CACHE,0700);
-    printf("Update %s downloaded; it will be installed on the next reboot.\n",ver);
+    printf("Update %s (build %s) downloaded; it will be installed on the next reboot.\n",ver,build);
     return 0;
 }

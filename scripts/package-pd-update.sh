@@ -1,13 +1,15 @@
 #!/bin/sh
 set -eu
-if [ "$#" -ne 4 ]; then
-  echo "usage: $0 <system-root> <version> <ed25519-private-key> <archive-url>" >&2
+if [ "$#" -ne 5 ]; then
+  echo "usage: $0 <system-root> <version> <build> <ed25519-private-key> <archive-url>" >&2
   exit 2
 fi
 ROOT=$(CDPATH= cd -- "$1" && pwd)
 VERSION=$2
-KEY=$(CDPATH= cd -- "$(dirname -- "$3")" && pwd)/$(basename -- "$3")
-URL=$4
+BUILD=$3
+KEY=$(CDPATH= cd -- "$(dirname -- "$4")" && pwd)/$(basename -- "$4")
+URL=$5
+case "$BUILD" in ""|*[!A-Za-z0-9._-]*) echo "invalid build identifier" >&2; exit 1 ;; esac
 case "$URL" in https://github.com/Lord-Grumpypants/PureDarwin/releases/download/*/update.tar.xz) ;; *) echo "invalid GitHub Release asset URL" >&2; exit 1 ;; esac
 OUT=${PD_UPDATE_OUT:-"$PWD/pd-update-release"}
 mkdir -p "$OUT"
@@ -53,6 +55,7 @@ SIZE=$(python3 -c 'import os,sys; print(os.path.getsize(sys.argv[1]))' "$TMP/upd
 {
   printf 'PDUPDATE1\n'
   printf 'version=%s\n' "$VERSION"
+  printf 'build=%s\n' "$BUILD"
   printf 'sha256=%s\n' "$HASH"
   printf 'size=%s\n' "$SIZE"
   printf 'url=%s\n' "$URL"
