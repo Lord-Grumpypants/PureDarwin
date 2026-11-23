@@ -85,6 +85,7 @@ static int archive_url(const char *path, char *out, size_t cap)
     while(fgets(line,sizeof(line),fp)){
         if(strncmp(line,"url=",4))continue;
         size_t n=strcspn(line+4,"\r\n");
+        line[4+n]=0;
         const char *value=line+4;
         size_t prefix=strlen(RELEASE_PREFIX);
         if(found||n>=cap||n<=prefix+1||strncmp(value,RELEASE_PREFIX,prefix)){
