@@ -97,7 +97,7 @@ static int parse_manifest(const unsigned char *p, size_t n, unsigned char digest
     if (!copy) return -1;
     char *line = strtok_r(copy, "\n", &save);
     if (!line || strcmp(line, "PDUPDATE1")) { free(copy); return -1; }
-    int hash = 0, bytes = 0, version = 0;
+    int hash = 0, bytes = 0, version = 0, url = 0;
     while ((line = strtok_r(NULL, "\n", &save))) {
         if (!strncmp(line, "version=", 8) && !version && line[8]) version = 1;
         else if (!strncmp(line, "sha256=", 7) && !hash && strlen(line + 7) == 64) {
@@ -107,9 +107,22 @@ static int parse_manifest(const unsigned char *p, size_t n, unsigned char digest
             char *end=NULL; unsigned long long v=strtoull(line+5,&end,10);
             if (!end || *end || !v || v>MAX_ARCHIVE) { free(copy); return -1; }
             *size=(uint64_t)v; bytes=1;
+        } else if (!strncmp(line, "url=", 4) && !url) {
+            const char *prefix = "https://github.com/Lord-Grumpypants/PureDarwin/releases/download/";
+            const char *value = line + 4;
+            size_t prefix_len = strlen(prefix), value_len = strlen(value);
+            const char *slash = value_len > prefix_len ? strchr(value + prefix_len, '/') : NULL;
+            if (strncmp(value, prefix, prefix_len) || !slash || slash == value + prefix_len ||
+                strcmp(slash, "/update.tar.xz")) { free(copy); return -1; }
+            for (const char *q = value + prefix_len; q < slash; q++)
+                if (!((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') ||
+                      (*q >= '0' && *q <= '9') || *q == '.' || *q == '_' || *q == '-')) {
+                    free(copy); return -1;
+                }
+            url = 1;
         } else { free(copy); return -1; }
     }
-    free(copy); return hash && bytes && version ? 0 : -1;
+    free(copy); return hash && bytes && version && url ? 0 : -1;
 }
 static int verify_signature(const unsigned char *m,size_t ml,const unsigned char *s,size_t sl)
 {

@@ -14,14 +14,14 @@
 extern char **environ;
 #define CACHE "/Library/UpdateCache"
 #define KEY "/System/Library/PrivateFrameworks/PDUpdate.framework/Resources/update-ed25519.pub"
-#define BASE "https://lord-grumpypants.github.io/PureDarwin/updates/x86_64/"
+#define FEED "https://lord-grumpypants.github.io/PureDarwin/updates/x86_64/"
+#define RELEASE_PREFIX "https://github.com/Lord-Grumpypants/PureDarwin/releases/download/"
 
-static int fetch(const char *name, const char *tmp)
+static int fetch(const char *url, const char *tmp)
 {
-    char url[512];
-    if (snprintf(url,sizeof(url),"%s%s",BASE,name)>=(int)sizeof(url)) return -1;
-    char *const av[]={"/usr/bin/curl","--fail","--location","--silent","--show-error",
-        "--connect-timeout","15","--max-time","1800","--output",(char *)tmp,url,NULL};
+    char *const av[]={"/usr/bin/curl","--fail","--location","--proto","=https",
+        "--proto-redir","=https","--max-redirs","5","--silent","--show-error",
+        "--connect-timeout","15","--max-time","1800","--output",(char *)tmp,(char *)url,NULL};
     pid_t pid; int status;
     if(posix_spawn(&pid,av[0],NULL,NULL,av,environ)!=0)return -1;
     while(waitpid(pid,&status,0)<0)if(errno!=EINTR)return -1;
@@ -53,6 +53,34 @@ static int version(const char *path,char *out,size_t cap)
         memcpy(out,line+8,n);out[n]=0;found=1;break;
     }
     fclose(fp);return found?0:-1;
+}
+static int archive_url(const char *path, char *out, size_t cap)
+{
+    FILE *fp=fopen(path,"r");
+    if(!fp)return -1;
+    char line[1200];
+    int found=0;
+    while(fgets(line,sizeof(line),fp)){
+        if(strncmp(line,"url=",4))continue;
+        size_t n=strcspn(line+4,"\r\n");
+        const char *value=line+4;
+        size_t prefix=strlen(RELEASE_PREFIX);
+        if(found||n>=cap||n<=prefix+1||strncmp(value,RELEASE_PREFIX,prefix)){
+            fclose(fp);return -1;
+        }
+        const char *slash=memchr(value+prefix,'/',n-prefix);
+        if(!slash||slash==value+prefix||strcmp(slash,"/update.tar.xz")){
+            fclose(fp);return -1;
+        }
+        for(const char *p=value+prefix;p<slash;p++)
+            if(!((*p>='a'&&*p<='z')||(*p>='A'&&*p<='Z')||
+                 (*p>='0'&&*p<='9')||*p=='.'||*p=='_'||*p=='-')){
+                fclose(fp);return -1;
+            }
+        memcpy(out,value,n);out[n]=0;found=1;
+    }
+    fclose(fp);
+    return found?0:-1;
 }
 static int sync_path(const char *path)
 {
@@ -94,17 +122,17 @@ int main(int argc,char **argv)
     }
     const char *mt=CACHE "/.manifest.download",*st=CACHE "/.manifest.sig.download";
     unlink(mt);unlink(st);
-    if(fetch("manifest",mt)||fetch("manifest.sig",st)||!signature_ok(mt,st)){
+    if(fetch(FEED "manifest",mt)||fetch(FEED "manifest.sig",st)||!signature_ok(mt,st)){
         unlink(mt);unlink(st);fprintf(stderr,"pd-update-helper: no valid signed update is available\n");return 1;
     }
-    char ver[128];
-    if(version(mt,ver,sizeof(ver))){unlink(mt);unlink(st);return 1;}
+    char ver[128],url[1200];
+    if(version(mt,ver,sizeof(ver))||archive_url(mt,url,sizeof(url))){unlink(mt);unlink(st);return 1;}
     if(!strcmp(argv[1],"check")){
         printf("Available update: %s\n",ver);unlink(mt);unlink(st);return 0;
     }
     const char *at=CACHE "/.update.download";
     unlink(at);
-    if(fetch("update.tar.xz",at)){unlink(mt);unlink(st);unlink(at);fprintf(stderr,"pd-update-helper: update download failed\n");return 1;}
+    if(fetch(url,at)){unlink(mt);unlink(st);unlink(at);fprintf(stderr,"pd-update-helper: update download failed\n");return 1;}
     if(sync_path(mt)||sync_path(st)||sync_path(at)||rename(mt,CACHE "/manifest")||rename(st,CACHE "/manifest.sig")||rename(at,CACHE "/update.tar.xz")||sync_cache()){
         unlink(mt);unlink(st);unlink(at);fprintf(stderr,"pd-update-helper: cannot stage downloaded update\n");return 1;
     }
