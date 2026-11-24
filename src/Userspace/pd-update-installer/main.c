@@ -196,11 +196,18 @@ static int allowed_path(const char *p)
 {
     if(!p||!*p||p[0]=='/'||strstr(p,"../")||!strcmp(p,"..")||strstr(p,"/..")||strstr(p,"//"))return 0;
     if(!strncmp(p,"Applications",12)&&(p[12]==0||p[12]=='/')){
-        /* Applications is shared with the user: only <name>.app bundles are ours. */
+        /* The Applications root is allowed, but ordinary parent directories
+         * are implicit. A path is accepted only once it enters a .app bundle. */
         if(!p[12]||!p[13])return 1;
-        const char *name=p+13,*slash=strchr(name,'/');
-        size_t n=slash?(size_t)(slash-name):strlen(name);
-        return n>4&&!strncmp(name+n-4,".app",4);
+        const char *component=p+13;
+        while(*component){
+            const char *slash=strchr(component,'/');
+            size_t n=slash?(size_t)(slash-component):strlen(component);
+            if(n>4&&!memcmp(component+n-4,".app",4))return 1;
+            if(!slash)return 0;
+            component=slash+1;
+        }
+        return 0;
     }
     for(size_t i=0;i<sizeof(roots)/sizeof(roots[0]);i++){
         size_t n=strlen(roots[i]); if(!strncmp(p,roots[i],n)&&(p[n]==0||p[n]=='/'))return 1;
@@ -264,6 +271,8 @@ static int mkparents(const char *path)
         if (*p != '/') continue;
         *p = 0;
         if (mkdir(tmp, 0700) && errno != EEXIST) return -1;
+        struct stat st;
+        if (lstat(tmp, &st) || !S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode)) return -1;
         *p = '/';
     }
     return 0;
@@ -309,7 +318,7 @@ out:
     free(buf);
     return rc;
 }
-/* rel is e.g. "System" or "Applications/Calculator.app" */
+/* rel is e.g. "System" or "Applications/Utilities/Calculator.app" */
 static int swap_entry(const char *rel)
 {
     char staged[PATH_MAX], live[PATH_MAX], saved[PATH_MAX];
@@ -319,29 +328,61 @@ static int swap_entry(const char *rel)
     if (++g_ops >= MAX_OPS - 1) return -1;
     int had = exists(live);
     if (append_journal(had ? 'E' : 'N', rel)) return -1;   /* journal BEFORE touching live */
+    if (mkparents(live)) return -1;
     if (had && (mkparents(saved) || rename(live, saved))) return -1;
     if (rename(staged, live)) return -1;
     return 0;
 }
-/* Replace each staged Applications/<name>.app individually; anything else in /Applications stays. */
-static int swap_apps(int *count)
+static int is_app_bundle(const char *name)
 {
+    size_t n = strlen(name);
+    return n > 4 && !strcmp(name + n - 4, ".app");
+}
+/* Walk implicit parent directories and replace each .app bundle at its original path. */
+static int swap_apps_in_dir(const char *relative, int *count)
+{
+    char directory[PATH_MAX];
+    int length = relative[0]
+        ? snprintf(directory, sizeof(directory), STAGING "/Applications/%s", relative)
+        : snprintf(directory, sizeof(directory), STAGING "/Applications");
+    if (length < 0 || length >= (int)sizeof(directory)) return -1;
+
     struct dirent **list = NULL;
-    int total = scandir(STAGING "/Applications", &list, NULL, NULL), rc = 0;
+    int total = scandir(directory, &list, NULL, alphasort);
     if (total < 0) return errno == ENOENT ? 0 : -1;
-    for (int i = 0; i < total; i++) {
+
+    int rc = 0;
+    for (int i = 0; i < total && !rc; i++) {
         const char *name = list[i]->d_name;
-        size_t n = strlen(name);
-        if (rc || name[0] == '.' || n < 5 || strcmp(name + n - 4, ".app")) continue;
+        if (!strcmp(name, ".") || !strcmp(name, "..")) continue;
+
         char rel[PATH_MAX], staged[PATH_MAX];
         struct stat st;
-        if (snprintf(rel, sizeof(rel), "Applications/%s", name) >= (int)sizeof(rel) ||
+        int n = relative[0]
+            ? snprintf(rel, sizeof(rel), "Applications/%s/%s", relative, name)
+            : snprintf(rel, sizeof(rel), "Applications/%s", name);
+        if (n < 0 || n >= (int)sizeof(rel) ||
             snprintf(staged, sizeof(staged), STAGING "/%s", rel) >= (int)sizeof(staged) ||
-            lstat(staged, &st) || !S_ISDIR(st.st_mode) || swap_entry(rel)) rc = -1;
-        else (*count)++;
+            lstat(staged, &st) || !S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode)) {
+            rc = -1;
+            break;
+        }
+
+        if (is_app_bundle(name)) {
+            if (swap_entry(rel)) rc = -1;
+            else (*count)++;
+        } else if (swap_apps_in_dir(rel + sizeof("Applications/") - 1, count)) {
+            rc = -1;
+        }
     }
+
     for (int i = 0; i < total; i++) free(list[i]);
     free(list);
+    return rc;
+}
+static int swap_apps(int *count)
+{
+    int rc = swap_apps_in_dir("", count);
     (void)sync_dir("/Applications");
     return rc;
 }

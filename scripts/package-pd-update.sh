@@ -16,16 +16,8 @@ mkdir -p "$OUT"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/pd-update.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 skip() { case " ${PD_UPDATE_SKIP_ROOTS:-} " in *" $1 "*) return 0 ;; esac; return 1; }
-# /Applications is shared with the user: the installer only swaps <name>.app bundles
-# and rejects an archive with anything else under Applications/.
-if [ -d "$ROOT/Applications" ] && ! skip Applications; then
-  EXTRA=$(find "$ROOT/Applications" -mindepth 1 -maxdepth 1 ! -name '*.app' | head -n 5)
-  if [ -n "$EXTRA" ]; then
-    echo "Applications contains entries the installer would reject (only <name>.app is allowed):" >&2
-    echo "$EXTRA" >&2
-    exit 1
-  fi
-fi
+# /Applications is shared with the user. Only .app bundles are packaged,
+# preserving their paths while omitting ordinary parent directories such as Utilities.
 set --
 for d in System usr bin sbin etc Applications; do
   skip "$d" && continue
@@ -47,7 +39,30 @@ def root_owner(member):
 
 with tarfile.open(output, "w", format=tarfile.PAX_FORMAT) as archive:
     for name in names:
-        archive.add(os.path.join(root, name), arcname=name, recursive=True, filter=root_owner)
+        path = os.path.join(root, name)
+
+        if name == "Applications":
+            # Keep the root entry, but do not recursively archive user-owned
+            # directories. Add every real .app bundle at its original path.
+            archive.add(path, arcname=name, recursive=False, filter=root_owner)
+            for current, dirs, _files in os.walk(path, topdown=True, followlinks=False):
+                dirs.sort()
+                for entry in dirs[:]:
+                    app_path = os.path.join(current, entry)
+                    if entry.endswith(".app") and not os.path.islink(app_path):
+                        relative = os.path.relpath(app_path, root)
+                        archive.add(
+                            app_path,
+                            arcname=relative,
+                            recursive=True,
+                            filter=root_owner,
+                        )
+                        # An app bundle is an atomic application tree. Do not
+                        # separately discover nested .app directories inside it.
+                        dirs.remove(entry)
+            continue
+
+        archive.add(path, arcname=name, recursive=True, filter=root_owner)
 PY
 xz -T0 -9e -c "$TMP/update.tar" > "$TMP/update.tar.xz"
 HASH=$(shasum -a 256 "$TMP/update.tar.xz" | awk '{print $1}')
