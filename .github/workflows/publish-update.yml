@@ -96,7 +96,7 @@ jobs:
           openssl pkey -pubin -in "$RUNNER_TEMP/update-signing-key.pub" -outform DER > "$RUNNER_TEMP/secret-public.der"
           cmp "$RUNNER_TEMP/image-public.der" "$RUNNER_TEMP/secret-public.der"
           archive_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$UPDATE_VERSION/update.tar.xz"
-          UPDATE_BUILD="$(nix eval --raw --expr '(import ./nix/version.nix).build')"
+          UPDATE_BUILD="$(nix eval --raw --impure --expr '(import ./nix/version.nix).build')"
           PD_UPDATE_OUT="$RUNNER_TEMP/update-release" \
             sh scripts/package-pd-update.sh "${{ steps.rootfs.outputs.path }}" "$UPDATE_VERSION" "$UPDATE_BUILD" "$key" "$archive_url"
           mkdir -p site/updates/x86_64
