@@ -2695,6 +2695,16 @@
             rootMB = old.rootMB + 600;
             bootArgs = "-v debug=0x210 -nogzalloc_mode keepsyms=1 serial=3 gopconsole=1 -noprogress csr-active-config=0x23 dtrace_kernel_symbol_mode=1 fbsdkpi_debug=1";
           });
+          # The installer media with the same NVIDIA 580 + UVM kernel collection as image-nvidia.
+          # Start from image-installer so its disk tools, pdinstall, Install PureDarwin.app,
+          # bootFilesInTree, and graphical installer boot arguments are retained.
+          imageNvidiaInstallerBuild = linuxPackages.image-installer.override (old: {
+            kc = kcNvidiaBuild;
+            extraPackages = builtins.filter (p: p != gpuAuxFiles) old.extraPackages
+              ++ [ nvidiaAuxFiles elftransBuild nvidia580 nvidiaLinuxRoot pdnvprobeBuild ];
+            imageFileName = "puredarwin-nvidia-installer.img";
+            rootMB = old.rootMB + 600;
+          });
           pdgltriBuild = pd.x86_64.pdgltri;
           # neuswc composites with GL on radeonsi (gles) or with pixman (cpu)
           neuswcEnv = gfx: pkgs.writeTextDir "etc/neuswc.env" ''
@@ -2742,6 +2752,8 @@
             image-sb = mkSecureBootImage imageGpuBuild;
             # the same with NVIDIA's 580 driver for Maxwell to Volta
             image-nvidia = imageNvidiaBuild;
+            # the installer and rescue drive with NVIDIA 580 and UVM
+            image-nvidia-installer = imageNvidiaInstallerBuild;
           }
             // lib.filterAttrs (_: lib.isDerivation) nixPortPackages
             # the frameworks built for the browser with emscripten (see nix/wasm.nix)
@@ -2787,6 +2799,7 @@
             minimal = { image = "image-minimal"; arch = "x86_64"; };
             wayland = { image = "image-wayland"; arch = "x86_64"; };
             nvidia-580 = { image = "image-nvidia"; arch = "x86_64"; };
+            nvidia-580-installer = { image = "image-nvidia-installer"; arch = "x86_64"; };
             arm64-virt-minimal = { image = "image-arm64-virt-minimal"; arch = "arm64"; };
           };
         in
