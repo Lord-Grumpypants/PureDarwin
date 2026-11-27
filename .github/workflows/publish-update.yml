@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   build-and-publish:
-    name: Build, sign, and publish x86_64 update
+    name: Build, sign, and publish NVIDIA 580 x86_64 update
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
@@ -58,12 +58,12 @@ jobs:
             extra-substituters = https://hydra.lab004.dev
             extra-trusted-public-keys = hydra.lab004.dev-1:gPXVaEarmWgIFDuqmpf+9gXetBCC9jxzkZg+CZ8cC+M=
 
-      - name: Build PureDarwin x86_64 image
+      - name: Build PureDarwin NVIDIA 580 x86_64 image
         run: |
           nix build -L \
             --option download-attempts 10 \
             --fallback \
-            .#hydraJobs.release.full
+            .#hydraJobs.release.nvidia-580
 
       - name: Mount the image root filesystem
         id: rootfs
@@ -129,7 +129,7 @@ jobs:
       - name: Upload PureDarwin disk image
         uses: actions/upload-artifact@v4
         with:
-          name: PureDarwin-${{ env.UPDATE_VERSION }}-x86_64
+          name: PureDarwin-${{ env.UPDATE_VERSION }}-x86_64-nvidia-580
           path: ${{ runner.temp }}/puredarwin.img
           if-no-files-found: error
           compression-level: 0
