@@ -63,7 +63,7 @@ jobs:
           nix build -L \
             --option download-attempts 10 \
             --fallback \
-            .#hydraJobs.release.nvidia-580
+            .#hydraJobs.release.nvidia-580-installer
 
       - name: Mount the image root filesystem
         id: rootfs
