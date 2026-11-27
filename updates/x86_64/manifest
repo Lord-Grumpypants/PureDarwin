@@ -1,5 +1,6 @@
 PDUPDATE1
 version=26.5
-sha256=8daa64c851989bcfc7a5b59731053e28135f14d1bfbe5f50cbce3a7c659767df
-size=145948360
+build=25F74
+sha256=5f674ead3d141c15c11b030561967def5e051468e702f68f4e6074da1bb570af
+size=281090436
 url=https://github.com/Lord-Grumpypants/PureDarwin/releases/download/26.5/update.tar.xz
