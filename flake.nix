@@ -2705,6 +2705,15 @@
             imageFileName = "puredarwin-nvidia-installer.img";
             rootMB = old.rootMB + 600;
           });
+          # Diagnostic installer: retain the NVIDIA 580 payload, but use the known-good
+          # generic GPU kernel collection to isolate the NVIDIA-specific KC additions.
+          imageNvidiaInstallerGpuKcBuild = linuxPackages.image-installer.override (old: {
+            kc = kcGpuBuild;
+            extraPackages = builtins.filter (p: p != gpuAuxFiles && p != nvidiaAuxFiles) old.extraPackages
+              ++ [ gpuAuxFiles elftransBuild nvidia580 nvidiaLinuxRoot pdnvprobeBuild ];
+            imageFileName = "puredarwin-nvidia-installer-gpu-kc.img";
+            rootMB = old.rootMB + 600;
+          });
           pdgltriBuild = pd.x86_64.pdgltri;
           # neuswc composites with GL on radeonsi (gles) or with pixman (cpu)
           neuswcEnv = gfx: pkgs.writeTextDir "etc/neuswc.env" ''
@@ -2754,6 +2763,8 @@
             image-nvidia = imageNvidiaBuild;
             # the installer and rescue drive with NVIDIA 580 and UVM
             image-nvidia-installer = imageNvidiaInstallerBuild;
+            # Diagnostic: NVIDIA userspace/payload with the generic GPU kernel collection.
+            image-nvidia-installer-gpu-kc = imageNvidiaInstallerGpuKcBuild;
           }
             // lib.filterAttrs (_: lib.isDerivation) nixPortPackages
             # the frameworks built for the browser with emscripten (see nix/wasm.nix)
@@ -2800,6 +2811,7 @@
             wayland = { image = "image-wayland"; arch = "x86_64"; };
             nvidia-580 = { image = "image-nvidia"; arch = "x86_64"; };
             nvidia-580-installer = { image = "image-nvidia-installer"; arch = "x86_64"; };
+            nvidia-580-installer-gpu-kc = { image = "image-nvidia-installer-gpu-kc"; arch = "x86_64"; };
             arm64-virt-minimal = { image = "image-arm64-virt-minimal"; arch = "arm64"; };
           };
         in
