@@ -1,0 +1,73 @@
+name: Build NVIDIA 580 GPU-KC diagnostic image
+
+on:
+  push:
+    branches:
+      - debug/nvidia-580-installer-gpu-kc
+    paths:
+      - .github/workflows/build-nvidia-580-gpu-kc.yml
+      - flake.nix
+      - flake.lock
+      - nix/**
+      - src/**
+      - external/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nvidia-580-gpu-kc-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build x86_64 diagnostic installer
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+            extra-substituters = https://hydra.lab004.dev
+            extra-trusted-public-keys = hydra.lab004.dev-1:gPXVaEarmWgIFDuqmpf+9gXetBCC9jxzkZg+CZ8cC+M=
+
+      - name: Build diagnostic image
+        run: |
+          nix build -L \
+            --option download-attempts 10 \
+            --fallback \
+            .#hydraJobs.release.nvidia-580-installer-gpu-kc
+
+      - name: Stage image artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$(find -L result -maxdepth 1 -type f -name '*.img.zst' -print -quit)"
+          if [[ -z "$image" ]]; then
+            echo "::error::Nix build succeeded but no compressed disk image was found in result."
+            find -L result -maxdepth 2 -type f -print || true
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/diagnostic-image"
+          cp "$image" "$RUNNER_TEMP/diagnostic-image/puredarwin-nvidia-580-gpu-kc.img.zst"
+          sha256sum "$RUNNER_TEMP/diagnostic-image/puredarwin-nvidia-580-gpu-kc.img.zst" \
+            | tee "$RUNNER_TEMP/diagnostic-image/SHA256SUMS"
+
+      - name: Upload diagnostic image
+        uses: actions/upload-artifact@v4
+        with:
+          name: PureDarwin-x86_64-nvidia-580-gpu-kc-${{ github.sha }}
+          path: ${{ runner.temp }}/diagnostic-image/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
